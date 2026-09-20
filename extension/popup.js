@@ -1,10 +1,12 @@
-/* 弹窗：列出候选内容（第 1 项 = 本次将要发送的那一份），显示桥的状态，
-   并提供"我不知道快捷键"时的兜底入口。
+/* 弹窗：上面一块「将要发送」（文字本体被线框框住），下面一块「候选」
+   （纯列表，可点选改发哪一条），再下面是发送按钮和桥的状态。
 
+   两块刻意分开：上面是"已经定下的那一份"，下面是"可以挑的东西"。
    候选列表由后台的 resolveContent() 生成 —— 和真正发送走的是同一条
-   取值链，所以列表里看到什么，发出去就是什么。
+   取值链，所以框里显示什么，发出去就是什么。
 
-   默认选中第 1 项（最新那条）。点别的行可以改选，按钮文案会跟着变。
+   默认选中第 1 项（最新那条）。点别的行可以改选，上面的框和按钮文案
+   都会跟着变。
 
    ⚠️ 剪贴板为什么在弹窗里读（而不是在后台）：
    Chrome 规定 navigator.clipboard.readText() 只能在「当前有焦点的
@@ -21,10 +23,14 @@ const sendBtn = document.getElementById('sendBtn');
 const lastLine = document.getElementById('lastLine');
 const clearLink = document.getElementById('clearLink');
 
-const pv = document.getElementById('pv');
-const pvHead = document.getElementById('pvHead');
-const pvList = document.getElementById('pvList');
-const pvMeta = document.getElementById('pvMeta');
+const sendBox = document.getElementById('sendBox');
+const sbHead = document.getElementById('sbHead');
+const sbText = document.getElementById('sbText');
+const sbMeta = document.getElementById('sbMeta');
+const candsHead = document.getElementById('candsHead');
+const candsTitleText = document.getElementById('candsTitleText');
+const candsList = document.getElementById('candsList');
+const candsNote = document.getElementById('candsNote');
 const diag = document.getElementById('diag');
 
 /* 后台返回的候选列表；sel 是当前选中的下标（默认 0 = 最新那条）。 */
@@ -83,38 +89,61 @@ function renderDiag(stats) {
     + '　·　' + ver;
 }
 
-/* ---------------------------------------------- 渲染候选列表 */
+/* ---------------------------------------------- 渲染
+
+   两块，视觉上刻意分开：
+     ① 「将要发送」—— 文字本体单独套一个实线矩形。这是"已经定下的"。
+     ② 「候选」—— 一个纯列表，用来改选。这是"可以挑的"。
+   选中那条在两处同时高亮，所以点列表里的第 3 行，上面框里的字会跟着换。 */
 
 function renderAll() {
-  pvList.textContent = '';
-  cands.forEach(function (c, i) {
+  const c = cands[sel];
+
+  /* ① 将要发送 */
+  if (c) {
+    sbHead.textContent = '将要发送 · 来自' + c.source;
+    sbText.style.display = 'block';
+    sbText.textContent = c.preview;
+    /* 悬停看全文 —— 框里只显示前 20 字，光看开头认不出是哪一条。 */
+    sbText.title = c.text;
+    sbMeta.textContent = c.truncated
+      ? ('共 ' + c.totalChars.toLocaleString('zh-CN') + ' 字，框里只显示开头')
+      : ('共 ' + c.totalChars + ' 字');
+    sbMeta.style.display = 'block';
+  }
+
+  /* ② 候选列表 */
+  candsList.textContent = '';
+  cands.forEach(function (it, i) {
     const el = document.createElement('div');
     el.className = 'cand' + (i === sel ? ' sel' : '');
-    el.textContent = c.preview;
-    /* 悬停能看全文 —— 只显示前 20 字时，光看开头没法确认是哪一条。 */
-    el.title = c.text;
     el.dataset.i = String(i);
-    pvList.appendChild(el);
+    el.title = it.text;
+
+    const no = document.createElement('span');
+    no.className = 'candNo';
+    no.textContent = String(i + 1);
+
+    const tx = document.createElement('span');
+    tx.className = 'candTxt';
+    tx.textContent = it.preview;
+
+    el.appendChild(no);
+    el.appendChild(tx);
+    candsList.appendChild(el);
   });
 
-  const c = cands[sel];
-  pvHead.textContent = c ? ('将要发送 · 来自' + c.source) : '';
+  candsHead.style.display = cands.length ? 'flex' : 'none';
+  candsTitleText.textContent = '候选 · 最近 ' + cands.length + ' 条';
 
-  const lines = [];
-  if (c) {
-    lines.push(c.truncated
-      ? ('共 ' + c.totalChars.toLocaleString('zh-CN') + ' 字，只显示开头')
-      : ('共 ' + c.totalChars + ' 字'));
-  }
-  if (noteText) lines.push(noteText);
-  pvMeta.textContent = lines.join('\n');
-  pvMeta.style.display = lines.length ? 'block' : 'none';
+  candsNote.textContent = noteText;
+  candsNote.className = 'candsNote' + (noteText ? ' show' : '');
 
   /* 按钮文案跟着选择走，免得选中了第 3 条、按钮却还写"立即发送"。 */
   sendBtn.textContent = sel === 0 ? '立即发送' : ('发送第 ' + (sel + 1) + ' 条');
 }
 
-pvList.addEventListener('click', function (e) {
+candsList.addEventListener('click', function (e) {
   const el = e.target && e.target.closest ? e.target.closest('.cand') : null;
   if (!el) return;
   const i = parseInt(el.dataset.i, 10);
@@ -200,11 +229,16 @@ async function refreshPreview() {
   sel = 0;
   noteText = '';
 
-  pv.className = 'pv';
-  pvHead.textContent = '正在读取剪贴板…';
-  pvList.textContent = '';
-  pvMeta.textContent = '';
-  pvMeta.style.display = 'none';
+  sendBox.className = 'sendbox';
+  sbHead.textContent = '正在读取剪贴板…';
+  sbText.textContent = '';
+  sbText.title = '';
+  sbMeta.textContent = '';
+  sbMeta.style.display = 'none';
+  candsHead.style.display = 'none';
+  candsList.textContent = '';
+  candsNote.textContent = '';
+  candsNote.className = 'candsNote';
   sendBtn.disabled = true;
   sendBtn.textContent = '立即发送';
 
@@ -220,11 +254,13 @@ async function refreshPreview() {
 
   if (!r || !r.ok) {
     const restricted = !!(r && r.restricted);
-    pv.className = 'pv err';
-    pvHead.textContent = (r && r.reason) || '拿不到要发送的内容';
-    pvMeta.textContent = ((r && r.detail) || '') +
+    sendBox.className = 'sendbox err';
+    sbHead.textContent = (r && r.reason) || '拿不到要发送的内容';
+    /* 没内容可发时把那个线框收起来 —— 留一个空框只会让人以为漏了东西。 */
+    sbText.style.display = 'none';
+    sbMeta.textContent = ((r && r.detail) || '') +
       (restricted ? '\n这个页面发不了，按钮已停用。' : '\n按钮已停用。');
-    pvMeta.style.display = 'block';
+    sbMeta.style.display = 'block';
     sendBtn.disabled = true;
     renderDiag((r && r.stats) || {});
     return;
@@ -235,10 +271,11 @@ async function refreshPreview() {
   renderDiag(r.stats || {});
 
   if (!cands.length) {
-    pv.className = 'pv err';
-    pvHead.textContent = '拿不到要发送的内容';
-    pvMeta.textContent = '候选列表是空的。按钮已停用。';
-    pvMeta.style.display = 'block';
+    sendBox.className = 'sendbox err';
+    sbHead.textContent = '拿不到要发送的内容';
+    sbText.style.display = 'none';
+    sbMeta.textContent = '候选列表是空的。按钮已停用。';
+    sbMeta.style.display = 'block';
     sendBtn.disabled = true;
     return;
   }
@@ -259,7 +296,9 @@ async function refreshPreview() {
   }
 
   lastPreviewOk = true;
-  pv.className = 'pv' + (noteText ? ' warn' : '');
+  /* 候选数量不足这一类说明只出现在候选区，不再把上面那个"将要发送"框
+     染成黄色 —— 框里的内容本身是没问题的。 */
+  sendBox.className = 'sendbox';
   renderAll();
   sendBtn.disabled = false;
 }

@@ -39,29 +39,66 @@
     .dot.bad { background: #E24B4A; }
     #statusText { flex: 1; }
 
-    /* 候选列表：第 1 项永远是本次将要发送的那一份，下面跟更旧的内容 */
-    .pv {
+    /* ---------------------------------------------- 将要发送（独立一块）
+
+       这一块只放"这一下会发出去的那段文字"，文字本体自己再套一个
+       实线矩形（.sbText）。和下面的候选列表在视觉上完全分开 ——
+       候选是"能挑的东西"，这里是"已经定下的东西"。 */
+    .sendbox {
       border-radius: 8px;
       padding: 8px 10px 9px;
-      margin-bottom: 10px;
+      margin-bottom: 12px;
       background: #E6F1FB;
       border: 0.5px solid #185FA5;
     }
-    .pvHead {
+    .sbHead {
       font-size: 12px;
       font-weight: 500;
       color: #0C447C;
       margin-bottom: 6px;
     }
-    .pvMeta {
+    /* 文字本体：被框住的那个矩形 */
+    .sbText {
+      border: 1px solid #185FA5;
+      border-radius: 6px;
+      background: #FFFFFF;
+      padding: 7px 9px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #042C53;
+      word-break: break-all;
+      min-height: 34px;
+    }
+    .sbMeta {
       font-size: 12px;
       line-height: 1.5;
       color: #185FA5;
       margin-top: 6px;
       white-space: pre-line;
     }
+    .sendbox.err { background: #FCEBEB; border-color: #A32D2D; }
+    .sendbox.err .sbHead { color: #791F1F; }
+    .sendbox.err .sbText { border-color: #A32D2D; color: #791F1F; }
+    .sendbox.err .sbMeta { color: #A32D2D; }
+
+    /* ---------------------------------------------- 候选（另一块） */
+    .candsHead {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 5px;
+    }
+    .candsTitle {
+      font-size: 12px;
+      font-weight: 500;
+      color: #444441;
+    }
+    .candsTip { font-size: 11px; color: #8A8880; }
     .cand {
+      display: flex;
+      gap: 7px;
       padding: 6px 9px;
+      border: 0.5px solid #D8D6CE;
       border-radius: 6px;
       margin-bottom: 5px;
       background: #FFFFFF;
@@ -72,27 +109,32 @@
       cursor: pointer;
     }
     .cand:last-child { margin-bottom: 0; }
-    .cand:hover { background: #D6E8F8; }
+    .cand:hover { background: #EEF4FB; border-color: #85B7EB; }
+    .candNo { flex: 0 0 auto; color: #B4B2A9; font-size: 11px; line-height: 1.7; }
+    .candTxt { flex: 1; }
+    /* 当前选中：深色底 + 蓝框，和上面那个框里是同一段文字 */
     .cand.sel {
       background: #85B7EB;
+      border-color: #185FA5;
       color: #042C53;
       font-weight: 500;
       cursor: default;
     }
     .cand.sel:hover { background: #85B7EB; }
-    .pv.warn { background: #FAEEDA; border-color: #BA7517; }
-    .pv.warn .pvHead { color: #633806; }
-    .pv.warn .pvMeta { color: #854F0B; }
-    .pv.warn .cand { color: #854F0B; background: #FFFFFF; }
-    .pv.warn .cand:hover { background: #F3DCB4; }
-    .pv.warn .cand.sel { background: #FAC775; color: #412402; }
-    .pv.warn .cand.sel:hover { background: #FAC775; }
-    .pv.err { background: #FCEBEB; border-color: #A32D2D; }
-    .pv.err .pvHead { color: #791F1F; }
-    .pv.err .pvMeta { color: #A32D2D; }
+    .cand.sel .candNo { color: #0C447C; }
+    .candsNote {
+      font-size: 12px;
+      line-height: 1.5;
+      color: #854F0B;
+      margin-top: 6px;
+      white-space: pre-line;
+      display: none;
+    }
+    .candsNote.show { display: block; }
 
     button {
       width: 100%;
+      margin-top: 12px;
       padding: 9px;
       border: 0.5px solid #185FA5;
       border-radius: 8px;
@@ -162,18 +204,27 @@
     <span id="statusText">正在检查本地桥…</span>
   </div>
 
-  <div class="pv" id="pv">
-    <div class="pvHead" id="pvHead">正在读取剪贴板…</div>
-    <div id="pvList"></div>
-    <div class="pvMeta" id="pvMeta"></div>
+  <!-- 将要发送：文字单独被框住 -->
+  <div class="sendbox" id="sendBox">
+    <div class="sbHead" id="sbHead">正在读取剪贴板…</div>
+    <div class="sbText" id="sbText"></div>
+    <div class="sbMeta" id="sbMeta"></div>
   </div>
+
+  <!-- 候选：另起一块 -->
+  <div class="candsHead" id="candsHead" style="display:none">
+    <span class="candsTitle" id="candsTitleText">最近的内容</span>
+    <span class="candsTip">点一行改成发那条</span>
+  </div>
+  <div id="candsList"></div>
+  <div class="candsNote" id="candsNote"></div>
 
   <button id="sendBtn">立即发送</button>
 
   <div class="hint" id="lastLine"></div>
   <div class="hint">
     快捷键 <kbd>Ctrl</kbd> + <kbd>B</kbd> 永远发最新那条，这里的选择不影响它。<br>
-    点一行可以改成发那条　·　<span class="lnk" id="clearLink">清空历史</span>
+    <span class="lnk" id="clearLink">清空历史</span>
   </div>
 
   <div id="detail"></div>

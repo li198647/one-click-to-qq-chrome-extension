@@ -62,7 +62,25 @@ if (m) {
 
   const miss = refs.filter((r) => r && !fs.existsSync(path.join(ext, r)));
   check('manifest 引用的文件都存在', miss.length === 0, miss.join(',') || ('共 ' + refs.length + ' 个'));
+
+  const di = m.action && m.action.default_icon ? m.action.default_icon : {};
+  check('工具栏图标含 32px（高分屏要用）', !!di['32'], Object.keys(di).join(','));
 }
+
+/* ---------- 2b. 图标：四个尺寸都要在，且像素尺寸对得上 ---------- */
+/* PNG 头里第 16~24 字节就是宽高（IHDR），不用装图像库也能读。 */
+function pngSize(p) {
+  const b = fs.readFileSync(p);
+  return [b.readUInt32BE(16), b.readUInt32BE(20)];
+}
+const iconBad = [];
+for (const n of [16, 32, 48, 128]) {
+  const p = path.join(ext, 'icons', 'icon' + n + '.png');
+  if (!fs.existsSync(p)) { iconBad.push(n + ':缺失'); continue; }
+  const wh = pngSize(p);
+  if (wh[0] !== n || wh[1] !== n) iconBad.push(n + ':' + wh.join('x'));
+}
+check('图标 16/32/48/128 齐全且尺寸正确', iconBad.length === 0, iconBad.join(',') || '（4 个）');
 
 /* ---------- 3. popup.html 与 popup.js 的 id 对齐 ---------- */
 const html = fs.readFileSync(path.join(ext, 'popup.html'), 'utf8');
@@ -74,6 +92,20 @@ const ids = [...html.matchAll(/id="([\w-]+)"/g)].map((x) => x[1]);
 const used = [...popup.matchAll(/getElementById\('([\w-]+)'\)/g)].map((x) => x[1]);
 const noId = used.filter((i) => !ids.indexOf(i) >= 0 && ids.indexOf(i) < 0);
 check('popup.js 用到的 id 都在 html 里', noId.length === 0, noId.join(',') || ('html ' + ids.length + ' 个 / js ' + used.length + ' 个'));
+
+/* ---------- 3b. 版式：「将要发送」和「候选」必须是两块 ----------
+   木木的要求原话："要发送的文字单独一个矩形框线框住，不要和候选放在一起"。
+   做法是 .sendbox（含 .sbText 线框）与 .candsList 两个并列容器，
+   候选行不再出现在发送框里面。下面按 HTML 结构断言，别只看类名有没有定义。 */
+const sbStart = html.indexOf('id="sendBox"');
+const sbEnd = html.indexOf('<!-- 候选');
+const sbRegion = (sbStart >= 0 && sbEnd > sbStart) ? html.slice(sbStart, sbEnd) : '';
+check('popup: 找到「将要发送」区块', sbRegion.length > 0);
+check('popup: 发送的文字套了实线矩形', /\.sbText\s*\{[^}]*border:\s*1px solid/.test(html) && /id="sbText"/.test(sbRegion));
+check('popup: 候选不在发送框里面（两块分开）',
+  sbRegion.indexOf('candsList') === -1 && /id="candsList"/.test(html));
+check('popup: 候选行有独立行样式（不是直接铺在背景上）', /\.cand\s*\{[^}]*border:/.test(html));
+check('popup: 点候选会同步刷新上面那个框', /sbText\.textContent = c\.preview/.test(popup));
 
 /* ---------- 4. 关键实现是否还在 ---------- */
 const feat = [
