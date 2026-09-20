@@ -28,8 +28,8 @@
   "commands": {
     "send-to-qq": {
       "suggested_key": {
-        "default": "Ctrl+Shift+S",
-        "mac": "Command+Shift+S"
+        "default": "Ctrl+B",
+        "mac": "Command+B"
       },
       "description": "把选中文字 / 剪贴板 / 当前页面发到手机 QQ"
     }

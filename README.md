@@ -101,14 +101,14 @@ python qq_bridge.py
 1. 地址栏输入 `chrome://extensions`
 2. 右上角打开「**开发者模式**」
 3. 左上角点「**加载已解压的扩展程序**」→ 选中 `extension` 文件夹
-4. 去 `chrome://extensions/shortcuts` 确认 `Ctrl+Shift+S` 已分配
+4. 去 `chrome://extensions/shortcuts` 确认 `Ctrl+B` 已分配
    - ⚠️ 未打包的开发版扩展，manifest 里的默认快捷键**不会自动生效**，需要在这里手动设一次
 
 ---
 
 ## 用法
 
-按下 `Ctrl+Shift+S`，内容按三级优先级自动选取：
+按下 `Ctrl+B`，内容按三级优先级自动选取：
 
 | 优先级 | 来源 | 说明 |
 |---|---|---|
