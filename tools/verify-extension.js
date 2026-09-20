@@ -107,6 +107,22 @@ check('popup: 候选不在发送框里面（两块分开）',
 check('popup: 候选行有独立行样式（不是直接铺在背景上）', /\.cand\s*\{[^}]*border:/.test(html));
 check('popup: 点候选会同步刷新上面那个框', /sbText\.textContent = c\.preview/.test(popup));
 
+/* ---------- 3c. 版式（v0.1.6，1.0.0 起沿用）：发送按钮搬进标题行、缩成 Windows 小按钮 ----------
+   木木的要求原话："将'立即发送'这个大按钮，缩小到 windows 对话框 yes/no
+   那样的大小。并把改好的按钮放在'一键发到 qq'那一行的最右端"；
+   另外「共 4 字」那一行要整行去掉。三件事都断言在这里。 */
+const trStart = html.indexOf('class="titleRow"');
+const trEnd = html.indexOf('</div>', trStart);
+const titleRow = (trStart >= 0 && trEnd > trStart) ? html.slice(trStart, trEnd) : '';
+check('popup: 发送按钮在标题行里', titleRow.indexOf('id="sendBtn"') >= 0 && /<h1>/.test(titleRow));
+check('popup: 按钮是 Windows 小尺寸（min-width 88 + height 26）',
+  /button\s*\{[^}]*min-width:\s*88px/.test(html) && /button\s*\{[^}]*height:\s*26px/.test(html));
+check('popup: 通栏大按钮的旧样式已去掉（不再是 width:100%）', !/button\s*\{[^}]*width:\s*100%/.test(html));
+check('popup: 「共 N 字」整行已彻底去掉', html.indexOf('id="sbMeta"') === -1 && popup.indexOf('sbMeta') === -1);
+check('popup: 发送区标题字号 11px', /\.sbHead\s*\{[^}]*font-size:\s*11px/.test(html));
+check('popup: 出错原因并入标题（且 pre-line 让换行生效）',
+  /white-space:\s*pre-line/.test(html) && /sbHead\.textContent = \(\(r && r\.reason\)/.test(popup));
+
 /* ---------- 4. 关键实现是否还在 ---------- */
 const feat = [
   ['background: 历史写入串行化 (editStore + storeChain)', /let storeChain = Promise\.resolve\(\);/.test(bg) && /function editStore/.test(bg)],

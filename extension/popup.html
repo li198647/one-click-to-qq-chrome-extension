@@ -13,10 +13,25 @@
       color: #2C2C2A;
       background: #ffffff;
     }
+
+    /* ---------------------------------------------- 标题行
+
+       左边是名字，右边是发送按钮 —— 按钮刻意做成 Windows 对话框
+       「是 / 否」那种小尺寸（88 × 26，字号 12px），而不是占满一整行
+       的大按钮。发送是这个弹窗唯一的主动作，但不值得用一整个通栏
+       去强调它；放在右上方也和系统对话框的肌肉记忆一致。 */
+    .titleRow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
     h1 {
       font-size: 14px;
       font-weight: 500;
-      margin: 0 0 10px;
+      margin: 0;
+      min-width: 0;
     }
     .row {
       display: flex;
@@ -51,11 +66,16 @@
       background: #E6F1FB;
       border: 0.5px solid #185FA5;
     }
+    /* 标题，小字。它只是个标签，所以比正文（13px）小一档。
+       出错时这里会接替原来的字数提示行，变成红色的多行说明 ——
+       pre-line 就是为了让那些换行生效。 */
     .sbHead {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 500;
       color: #0C447C;
       margin-bottom: 6px;
+      line-height: 1.5;
+      white-space: pre-line;
     }
     /* 文字本体：被框住的那个矩形 */
     .sbText {
@@ -69,17 +89,9 @@
       word-break: break-all;
       min-height: 34px;
     }
-    .sbMeta {
-      font-size: 12px;
-      line-height: 1.5;
-      color: #185FA5;
-      margin-top: 6px;
-      white-space: pre-line;
-    }
     .sendbox.err { background: #FCEBEB; border-color: #A32D2D; }
     .sendbox.err .sbHead { color: #791F1F; }
     .sendbox.err .sbText { border-color: #A32D2D; color: #791F1F; }
-    .sendbox.err .sbMeta { color: #A32D2D; }
 
     /* ---------------------------------------------- 候选（另一块） */
     .candsHead {
@@ -132,16 +144,21 @@
     }
     .candsNote.show { display: block; }
 
+    /* Windows 对话框风格的小按钮：88 × 26。
+       用 min-width 而不是固定 width —— 「发送第 3 条」比「立即发送」
+       宽一个字加一个数字，写死宽度会把它挤到换行。 */
     button {
-      width: 100%;
-      margin-top: 12px;
-      padding: 9px;
+      flex: 0 0 auto;
+      min-width: 88px;
+      height: 26px;
+      margin: 0;
+      padding: 0 10px;
       border: 0.5px solid #185FA5;
-      border-radius: 8px;
+      border-radius: 4px;
       background: #E6F1FB;
       color: #0C447C;
       font-family: inherit;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 500;
       cursor: pointer;
     }
@@ -197,18 +214,22 @@
   </style>
 </head>
 <body>
-  <h1>一键发到 QQ</h1>
+  <!-- 标题行：名字在左，发送按钮在右（Windows 对话框那种小按钮） -->
+  <div class="titleRow">
+    <h1>一键发到 QQ</h1>
+    <button id="sendBtn">立即发送</button>
+  </div>
 
   <div class="row">
     <span class="dot" id="dot"></span>
     <span id="statusText">正在检查本地桥…</span>
   </div>
 
-  <!-- 将要发送：文字单独被框住 -->
+  <!-- 将要发送：文字单独被框住。只有标题 + 文字本体两块，
+       原来那行「共 N 字」已按木木要求去掉。 -->
   <div class="sendbox" id="sendBox">
     <div class="sbHead" id="sbHead">正在读取剪贴板…</div>
     <div class="sbText" id="sbText"></div>
-    <div class="sbMeta" id="sbMeta"></div>
   </div>
 
   <!-- 候选：另起一块 -->
@@ -218,8 +239,6 @@
   </div>
   <div id="candsList"></div>
   <div class="candsNote" id="candsNote"></div>
-
-  <button id="sendBtn">立即发送</button>
 
   <div class="hint" id="lastLine"></div>
   <div class="hint">

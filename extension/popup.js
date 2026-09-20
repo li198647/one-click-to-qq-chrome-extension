@@ -26,7 +26,6 @@ const clearLink = document.getElementById('clearLink');
 const sendBox = document.getElementById('sendBox');
 const sbHead = document.getElementById('sbHead');
 const sbText = document.getElementById('sbText');
-const sbMeta = document.getElementById('sbMeta');
 const candsHead = document.getElementById('candsHead');
 const candsTitleText = document.getElementById('candsTitleText');
 const candsList = document.getElementById('candsList');
@@ -99,17 +98,15 @@ function renderDiag(stats) {
 function renderAll() {
   const c = cands[sel];
 
-  /* ① 将要发送 */
+  /* ① 将要发送 —— 只有标题和文字本体两块。
+     原来那行「共 N 字」已去掉（木木要求：不要这个提示）；
+     内容超过 20 字时 preview 末尾本来就带 "…"，看得出被截断。 */
   if (c) {
     sbHead.textContent = '将要发送 · 来自' + c.source;
     sbText.style.display = 'block';
     sbText.textContent = c.preview;
     /* 悬停看全文 —— 框里只显示前 20 字，光看开头认不出是哪一条。 */
     sbText.title = c.text;
-    sbMeta.textContent = c.truncated
-      ? ('共 ' + c.totalChars.toLocaleString('zh-CN') + ' 字，框里只显示开头')
-      : ('共 ' + c.totalChars + ' 字');
-    sbMeta.style.display = 'block';
   }
 
   /* ② 候选列表 */
@@ -233,8 +230,6 @@ async function refreshPreview() {
   sbHead.textContent = '正在读取剪贴板…';
   sbText.textContent = '';
   sbText.title = '';
-  sbMeta.textContent = '';
-  sbMeta.style.display = 'none';
   candsHead.style.display = 'none';
   candsList.textContent = '';
   candsNote.textContent = '';
@@ -255,12 +250,14 @@ async function refreshPreview() {
   if (!r || !r.ok) {
     const restricted = !!(r && r.restricted);
     sendBox.className = 'sendbox err';
-    sbHead.textContent = (r && r.reason) || '拿不到要发送的内容';
+    /* 出错原因并入标题：原来那行「共 N 字」已按要求去掉，如果这里
+       再不写原因，出错时就只剩一个红标题，排查时无从下手。
+       （.sbHead 带 white-space: pre-line，所以下面的换行会生效。） */
+    sbHead.textContent = ((r && r.reason) || '拿不到要发送的内容') +
+      ((r && r.detail) ? '\n' + r.detail : '') +
+      (restricted ? '\n这个页面发不了，按钮已停用。' : '\n按钮已停用。');
     /* 没内容可发时把那个线框收起来 —— 留一个空框只会让人以为漏了东西。 */
     sbText.style.display = 'none';
-    sbMeta.textContent = ((r && r.detail) || '') +
-      (restricted ? '\n这个页面发不了，按钮已停用。' : '\n按钮已停用。');
-    sbMeta.style.display = 'block';
     sendBtn.disabled = true;
     renderDiag((r && r.stats) || {});
     return;
@@ -272,10 +269,8 @@ async function refreshPreview() {
 
   if (!cands.length) {
     sendBox.className = 'sendbox err';
-    sbHead.textContent = '拿不到要发送的内容';
+    sbHead.textContent = '拿不到要发送的内容\n候选列表是空的。按钮已停用。';
     sbText.style.display = 'none';
-    sbMeta.textContent = '候选列表是空的。按钮已停用。';
-    sbMeta.style.display = 'block';
     sendBtn.disabled = true;
     return;
   }
