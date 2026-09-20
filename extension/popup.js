@@ -1,8 +1,10 @@
-/* 弹窗：预览「本次将要发送的内容」，显示桥的状态，并提供
-   "我不知道快捷键"时的兜底入口。
+/* 弹窗：列出候选内容（第 1 项 = 本次将要发送的那一份），显示桥的状态，
+   并提供"我不知道快捷键"时的兜底入口。
 
-   预览和发送都由后台的 resolveContent() 取值，所以弹窗里显示的
-   就是真正会发出去的那一份。
+   候选列表由后台的 resolveContent() 生成 —— 和真正发送走的是同一条
+   取值链，所以列表里看到什么，发出去就是什么。
+
+   默认选中第 1 项（最新那条）。点别的行可以改选，按钮文案会跟着变。
 
    ⚠️ 剪贴板为什么在弹窗里读（而不是在后台）：
    Chrome 规定 navigator.clipboard.readText() 只能在「当前有焦点的
@@ -17,24 +19,23 @@ const statusText = document.getElementById('statusText');
 const detail = document.getElementById('detail');
 const sendBtn = document.getElementById('sendBtn');
 const lastLine = document.getElementById('lastLine');
+const clearLink = document.getElementById('clearLink');
 
 const pv = document.getElementById('pv');
 const pvHead = document.getElementById('pvHead');
-const pvBody = document.getElementById('pvBody');
+const pvList = document.getElementById('pvList');
 const pvMeta = document.getElementById('pvMeta');
+const diag = document.getElementById('diag');
+
+/* 后台返回的候选列表；sel 是当前选中的下标（默认 0 = 最新那条）。 */
+let cands = [];
+let sel = 0;
+let noteText = '';
+let lastPreviewOk = false;
 
 function setStatus(kind, text) {
   dot.className = 'dot' + (kind ? ' ' + kind : '');
   statusText.textContent = text;
-}
-
-function setPreview(kind, head, body, meta) {
-  pv.className = 'pv' + (kind ? ' ' + kind : '');
-  pvHead.textContent = head || '';
-  pvBody.textContent = body || '';
-  pvBody.style.display = body ? 'block' : 'none';
-  pvMeta.textContent = meta || '';
-  pvMeta.style.display = meta ? 'block' : 'none';
 }
 
 function showDetail(text, isError) {
@@ -52,6 +53,75 @@ function fmtTime(ms) {
   const p = (n) => String(n).padStart(2, '0');
   return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
+
+/* ---------------------------------------------- 底部诊断小字
+
+   把"每一路来源各记下了几条"摊开写出来。这不是装饰：如果连着复制
+   4 次、这里却写着「网页复制 ×0」，就能立刻断定网页里那套监听没生效，
+   而不用去猜"是不是历史功能坏了"。顺便把版本号也带上 —— 重载扩展后
+   靠它确认加载的确实是新版。 */
+
+const SRC_LABEL = {
+  '网页复制': '网页复制',
+  '网页剪切': '网页剪切',
+  '切回页面': '切回页面',
+  '切回标签页': '切回标签页',
+  '页面剪贴板': '定时巡检',
+  '触发快照': '打开弹窗',
+  '剪贴板': '其它'
+};
+
+function renderDiag(stats) {
+  const parts = [];
+  Object.keys(stats || {}).forEach(function (k) {
+    const n = Number(stats[k]) || 0;
+    if (n > 0) parts.push((SRC_LABEL[k] || k) + ' ×' + n);
+  });
+
+  const ver = 'v' + chrome.runtime.getManifest().version;
+  diag.textContent = (parts.length ? '记录来源：' + parts.join(' · ') : '记录来源：还没有')
+    + '　·　' + ver;
+}
+
+/* ---------------------------------------------- 渲染候选列表 */
+
+function renderAll() {
+  pvList.textContent = '';
+  cands.forEach(function (c, i) {
+    const el = document.createElement('div');
+    el.className = 'cand' + (i === sel ? ' sel' : '');
+    el.textContent = c.preview;
+    /* 悬停能看全文 —— 只显示前 20 字时，光看开头没法确认是哪一条。 */
+    el.title = c.text;
+    el.dataset.i = String(i);
+    pvList.appendChild(el);
+  });
+
+  const c = cands[sel];
+  pvHead.textContent = c ? ('将要发送 · 来自' + c.source) : '';
+
+  const lines = [];
+  if (c) {
+    lines.push(c.truncated
+      ? ('共 ' + c.totalChars.toLocaleString('zh-CN') + ' 字，只显示开头')
+      : ('共 ' + c.totalChars + ' 字'));
+  }
+  if (noteText) lines.push(noteText);
+  pvMeta.textContent = lines.join('\n');
+  pvMeta.style.display = lines.length ? 'block' : 'none';
+
+  /* 按钮文案跟着选择走，免得选中了第 3 条、按钮却还写"立即发送"。 */
+  sendBtn.textContent = sel === 0 ? '立即发送' : ('发送第 ' + (sel + 1) + ' 条');
+}
+
+pvList.addEventListener('click', function (e) {
+  const el = e.target && e.target.closest ? e.target.closest('.cand') : null;
+  if (!el) return;
+  const i = parseInt(el.dataset.i, 10);
+  if (isNaN(i) || i === sel || !cands[i]) return;
+  sel = i;
+  renderAll();
+});
 
 /* ---------------------------------------------- 在弹窗里读剪贴板 */
 
@@ -122,14 +192,21 @@ async function readClipboardHere() {
   return out;
 }
 
-/* ---------------------------------------------- 预览 */
-
-let lastPreviewOk = false;
+/* ---------------------------------------------- 刷新候选列表 */
 
 async function refreshPreview() {
   lastPreviewOk = false;
-  setPreview('', '正在读取剪贴板…', '', '');
+  cands = [];
+  sel = 0;
+  noteText = '';
+
+  pv.className = 'pv';
+  pvHead.textContent = '正在读取剪贴板…';
+  pvList.textContent = '';
+  pvMeta.textContent = '';
+  pvMeta.style.display = 'none';
   sendBtn.disabled = true;
+  sendBtn.textContent = '立即发送';
 
   /* 先在这里读剪贴板（弹窗此刻持有焦点），再连结果一起交给后台。 */
   const clip = await readClipboardHere();
@@ -143,32 +220,47 @@ async function refreshPreview() {
 
   if (!r || !r.ok) {
     const restricted = !!(r && r.restricted);
-    setPreview(
-      'err',
-      (r && r.reason) || '拿不到要发送的内容',
-      (r && r.detail) || '',
-      restricted ? '这个页面发不了，按钮已停用。' : '按钮已停用。'
-    );
+    pv.className = 'pv err';
+    pvHead.textContent = (r && r.reason) || '拿不到要发送的内容';
+    pvMeta.textContent = ((r && r.detail) || '') +
+      (restricted ? '\n这个页面发不了，按钮已停用。' : '\n按钮已停用。');
+    pvMeta.style.display = 'block';
+    sendBtn.disabled = true;
+    renderDiag((r && r.stats) || {});
+    return;
+  }
+
+  cands = Array.isArray(r.list) ? r.list : [];
+  noteText = r.note || '';
+  renderDiag(r.stats || {});
+
+  if (!cands.length) {
+    pv.className = 'pv err';
+    pvHead.textContent = '拿不到要发送的内容';
+    pvMeta.textContent = '候选列表是空的。按钮已停用。';
+    pvMeta.style.display = 'block';
     sendBtn.disabled = true;
     return;
   }
 
-  lastPreviewOk = true;
-
-  const metaLines = [];
-  if (r.truncated) metaLines.push('共 ' + r.totalChars.toLocaleString('zh-CN') + ' 字，只显示开头');
-  if (r.note) metaLines.push(r.note);
   /* 弹窗自己没读到剪贴板、并且最终也没用上剪贴板内容时，给一条自助提示。 */
-  if (!clip.clipOk && r.source !== '剪贴板') {
-    metaLines.push('（关掉这个弹窗、再点一次图标可以重试读取剪贴板）');
+  if (!clip.clipOk && cands[0].source !== '剪贴板') {
+    noteText = (noteText ? noteText + '\n' : '') +
+      '（关掉这个弹窗、再点一次图标可以重试读取剪贴板）';
   }
 
-  setPreview(
-    r.note ? 'warn' : '',
-    '将要发送 · 来自' + r.source,
-    r.preview,
-    metaLines.join('\n')
-  );
+  /* 候选没凑满时说明原因 —— 否则看起来像"功能坏了"。
+     扩展只在少数几个瞬间读得到剪贴板，漏掉的补不回来。 */
+  const max = r.max || 4;
+  if (cands.length < max) {
+    noteText = (noteText ? noteText + '\n' : '') +
+      '候选 ' + cands.length + '/' + max + ' 条。扩展只在「网页里复制」' +
+      '「切回页面」「打开这个弹窗 / 按 Ctrl+B」这几个瞬间读得到剪贴板。';
+  }
+
+  lastPreviewOk = true;
+  pv.className = 'pv' + (noteText ? ' warn' : '');
+  renderAll();
   sendBtn.disabled = false;
 }
 
@@ -221,9 +313,24 @@ async function refreshLast() {
   }
 }
 
+/* ---------------------------------------------- 清空历史 */
+
+clearLink.addEventListener('click', async function () {
+  clearLink.textContent = '已清空';
+  try {
+    await chrome.runtime.sendMessage({ type: 'clear-history' });
+  } catch (e) { /* 忽略 */ }
+  await refreshPreview();
+  setTimeout(function () { clearLink.textContent = '清空历史'; }, 1200);
+});
+
 /* ---------------------------------------------- 发送 */
 
 sendBtn.addEventListener('click', async () => {
+  /* 记下"你此刻看到并选中的那一条原文"。发送时按原文精确匹配，
+     匹配不到就直接发它 —— 保证看到什么就发什么。 */
+  const pick = cands[sel];
+
   sendBtn.disabled = true;
   sendBtn.textContent = '发送中…';
 
@@ -232,12 +339,14 @@ sendBtn.addEventListener('click', async () => {
 
   let res = null;
   try {
-    res = await chrome.runtime.sendMessage({ type: 'do-send', clipboard: clip });
+    res = await chrome.runtime.sendMessage({
+      type: 'do-send',
+      clipboard: clip,
+      pickText: pick ? pick.text : ''
+    });
   } catch (e) {
     res = { ok: false, reason: briefError(e) };
   }
-
-  sendBtn.textContent = '立即发送';
 
   /* 先刷新桥状态，再显示本次结果 —— 否则失败原因会被桥状态覆盖掉。 */
   await refreshHealth();

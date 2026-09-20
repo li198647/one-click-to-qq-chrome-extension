@@ -1,8 +1,10 @@
 /* ============================================================
    一键发到 QQ · 后台脚本（MV3 service worker）
-   职责：接收快捷键 / 弹窗的发送指令，抓内容，POST 给本地桥。
-   同时给弹窗提供「本次将要发送的内容」预览 —— 预览和发送走的是
-   同一个 resolveContent()，所以弹窗里看到什么，发出去就是什么。
+   职责：接收快捷键 / 弹窗 / 网页监听的指令，抓内容，POST 给本地桥。
+   同时维护一份「最近 4 条内容」的候选列表，供弹窗展示与改选。
+
+   预览和发送走同一个 resolveContent()，所以弹窗里看到什么，
+   发出去就是什么。
 
    ⚠️ 剪贴板的关键约束（0.1.1 修正）：
    Chrome 规定 navigator.clipboard.readText() 只能在「当前有焦点的
@@ -13,14 +15,47 @@
      · 点图标 → 弹窗有焦点 → 由 popup.js 读，结果随消息传进来
      · 按快捷键 → 页面还有焦点 → 由这里注入页面去读
    两边都没读到就明确报错，不静默降级成别的内容。
+
+   ⚠️ 历史的来源（0.1.2 起，0.1.3 补全）：
+   Chrome 没有任何「剪贴板变了」的通知接口，扩展只能在"能看见剪贴板"
+   的瞬间读到它。所以历史靠四路一起攒（前三路在 content.js）：
+     · 网页里的 copy / cut 事件
+     · 切回页面 / 标签页时的剪贴板快照（兜住在别处复制后回来）
+     · 页面有焦点时的低频巡检（兜住网页自带的"复制"按钮）
+     · 每次被触发时对剪贴板拍一张快照（点图标 / 按 Ctrl+B）
+   历史存在 chrome.storage.session —— 只在内存里，关掉浏览器即清空，
+   绝不把可能含密码/验证码的剪贴板内容写到磁盘上。
+
+   ⚠️ 0.1.3 补的第二个坑：manifest 里的 content_scripts 只对「之后加载
+   的页面」生效，扩展一重载，已经开着的标签页里就没有监听器了 ——
+   在那些页面上复制，扩展完全听不见（木木报的"只攒到 2 条"就是这个）。
+   所以下面会在安装/更新/重载时主动给现有标签页补注入一次。
+
+   ⚠️ 0.1.4 补的第三个坑：连着复制 4 条、只留下最后 1 条。
+   两个原因，一个在这个文件、一个在 content.js：
+     · 这里：历史是"读-改-写"，而 chrome.storage 没有事务。4 个消息
+       几乎同时到达时（service worker 刚被唤醒时最容易），4 次写入
+       互相覆盖，只剩最后一个。→ 所有改动串进一条 Promise 链（editStore）
+     · content.js：0.1.3 用标志位防重复注入是错的，重载扩展后旧实例的
+       监听器还在但发不出消息，新实例又被标志位挡住 → 整页监听是死的。
+   另外这里顺便记录了每一路来源各记下几条（stats），弹窗底部会显示，
+   出问题时能立刻看出是哪一路没在工作。
    ============================================================ */
 
 const BRIDGE = 'http://127.0.0.1:18761';
 const BRIDGE_SEND = BRIDGE + '/send';
 const BRIDGE_HEALTH = BRIDGE + '/health';
 
-/* 弹窗预览最多显示多少个字符。20 个字足以让链接露出域名。 */
+/* 列表里每一项最多显示多少个字符。20 个字足以让链接露出域名。 */
 const PREVIEW_LIMIT = 20;
+
+/* 候选列表最多几项（= 保留最近几次内容）。 */
+const HISTORY_MAX = 4;
+
+/* 历史存放位置：chrome.storage.session = 内存，关浏览器即清。
+   不用 storage.local（会明文落盘）、更不用 storage.sync（会上传云端）。
+   存的是一个对象 { items, stats }，不是纯数组。 */
+const HISTORY_KEY = 'clipHistory';
 
 let badgeTimer = null;
 let lastResult = null;
@@ -57,6 +92,87 @@ async function notify(title, message) {
       priority: 2
     });
   } catch (e) { /* 忽略 */ }
+}
+
+/* ---------------------------------------------- 历史（内存，关浏览器即清）
+
+   一个键里同时存两样东西：
+     items —— 最近 4 条内容
+     stats —— 每一路来源各"真正记下了"多少条
+
+   记 stats 是为了能一眼看出是不是哪一路没在工作：如果连着复制 4 次、
+   弹窗底部却写着「网页复制 ×0」，那就说明网页里那套监听根本没生效，
+   而不是"历史坏了"这种无从下手的感觉。 */
+
+const isText = (x) => typeof x === 'string' && !!x;
+
+async function readStore() {
+  try {
+    const o = await chrome.storage.session.get(HISTORY_KEY);
+    const v = o && o[HISTORY_KEY];
+    /* 兼容 0.1.3 及更早存的纯数组 */
+    if (Array.isArray(v)) return { items: v.filter(isText), stats: {} };
+    if (v && typeof v === 'object') {
+      return {
+        items: Array.isArray(v.items) ? v.items.filter(isText) : [],
+        stats: (v.stats && typeof v.stats === 'object' && !Array.isArray(v.stats)) ? v.stats : {}
+      };
+    }
+  } catch (e) { /* 忽略 */ }
+  return { items: [], stats: {} };
+}
+
+async function writeStore(st) {
+  const clean = {
+    items: (st.items || []).slice(0, HISTORY_MAX),
+    stats: st.stats || {}
+  };
+  try {
+    await chrome.storage.session.set({ [HISTORY_KEY]: clean });
+  } catch (e) { /* 忽略 */ }
+  return clean;
+}
+
+/* ⚠️ 所有"读-改-写"必须排队串行执行。
+
+   chrome.storage 没有事务、没有原子操作。连着复制 4 条时，4 个消息
+   几乎同时到达（service worker 刚从休眠中被唤醒时尤其容易），4 个
+   pushHistory 会各自读到同一份旧列表、各自写回自己那一份 —— 最后写入
+   的把前面三个全盖掉。表现就是"连着复制 4 次，只留下最后 1 条"。
+
+   把每次改动串进同一条 Promise 链，一次只跑一个，问题就没了。 */
+let storeChain = Promise.resolve();
+
+function editStore(fn) {
+  const run = storeChain.then(async () => {
+    const st = await readStore();
+    const out = await fn(st);
+    await writeStore(st);
+    return out;
+  });
+  /* 某一次失败不能把后面排队的全掐断 */
+  storeChain = run.then(() => undefined, () => undefined);
+  return run.catch(() => []);
+}
+
+/* 入列。相同内容不重复留两份 —— 只把它移到最前。
+   去重是必需的：网页复制时记一条，紧接着又被触发快照一次，
+   不去重就会立刻出现两条一模一样的内容。
+
+   how：这一条是谁送来的（网页复制 / 切回页面 / 页面剪贴板 / 触发快照）。
+   只在"确实顶上来了新的一条"时才计数，避免同一份内容被反复巡检刷数。 */
+async function pushHistory(text, how) {
+  const t = String(text == null ? '' : text).trim();
+  const src = String(how || '').trim() || '剪贴板';
+
+  return await editStore((st) => {
+    if (!t) return st.items;
+    if (st.items[0] !== t) {
+      st.stats[src] = (Number(st.stats[src]) || 0) + 1;
+    }
+    st.items = [t].concat(st.items.filter((x) => x !== t));
+    return st.items;
+  });
 }
 
 /* ---------------------------------------------- 在页面里读取
@@ -202,10 +318,25 @@ function makePreview(text) {
   };
 }
 
-/* ---------------------------------------------- 解析本次要发送的内容
+/* 给列表里的一项补上展示用的字段。 */
+function decorate(item) {
+  const p = makePreview(item.text);
+  return {
+    text: item.text,
+    source: item.source,
+    preview: p.preview,
+    totalChars: p.totalChars,
+    truncated: p.truncated
+  };
+}
+
+/* ---------------------------------------------- 解析候选列表
 
    预览和真实发送共用这一个函数 —— 这是"所见即所发"的唯一保证。
-   取值链：① 选中文字 → ② 剪贴板 → ③ 页面标题+URL
+
+   list[0] 永远是「本次将要发送的那一份」，取值优先级：
+     ① 选中文字 → ② 剪贴板 → ③ 页面标题+URL
+   list[1..] 是历史里更旧的内容（去重后，最多凑满 HISTORY_MAX 项）。
 
    providedClip：点图标那条路上，弹窗自己读到的剪贴板结果。
                  按快捷键时为 undefined，改用注入页面读到的结果。 */
@@ -232,24 +363,25 @@ async function resolveContent(providedClip) {
   const fromPage = normalizeClip(probe);
   const clip = pickClip(fromPopup, fromPage);
 
-  let content = '';
-  let source = '';
+  /* 「触发时快照」那一路：把此刻观察到的剪贴板收进历史（自动去重）。
+     网页复制监听漏掉的情况 —— 网页自带复制按钮、在别的程序里复制 ——
+     全靠它兜住。 */
+  const history = await pushHistory(clip.text, '触发快照');
+
+  const list = [];
   let note = '';
 
   if (!restricted && probe.selection) {
-    /* 页面上还有选中时它优先于剪贴板 —— 预览会照实标出"来自选中文字"，
-       这样即使和你以为的剪贴板不一致，你也能在弹窗里看见。 */
-    content = String(probe.selection).trim();
-    source = '选中文字';
+    /* 页面上还有选中时它优先于剪贴板 —— 弹窗会照实标出"来自选中文字"，
+       这样即使和你以为的不一样，你也能在列表里看见。 */
+    list.push({ text: String(probe.selection).trim(), source: '选中文字' });
   } else if (clip.text) {
-    content = clip.text;
-    source = '剪贴板';
+    list.push({ text: clip.text, source: '剪贴板' });
   } else if (!restricted && (probe.title || probe.url)) {
     const parts = [];
     if (probe.title) parts.push(probe.title);
     if (probe.url) parts.push(probe.url);
-    content = parts.join('\n');
-    source = '页面标题+链接';
+    list.push({ text: parts.join('\n'), source: '页面标题+链接' });
 
     if (!clip.ok) {
       const diag = [];
@@ -275,8 +407,8 @@ async function resolveContent(providedClip) {
     };
   }
 
-  content = (content || '').trim();
-  if (!content) {
+  const first = list.length ? list[0].text : '';
+  if (!first) {
     return {
       ok: false,
       reason: '没拿到任何内容。',
@@ -284,7 +416,15 @@ async function resolveContent(providedClip) {
     };
   }
 
-  return { ok: true, content: content, source: source, note: note };
+  /* 补上更旧的候选。跳过和第一项重复的那一条，最多凑满 HISTORY_MAX 项。 */
+  for (let i = 0; i < history.length && list.length < HISTORY_MAX; i++) {
+    const h = history[i];
+    if (h === first) continue;
+    if (list.some((x) => x.text === h)) continue;
+    list.push({ text: h, source: '剪贴板历史' });
+  }
+
+  return { ok: true, list: list, note: note, restricted: false };
 }
 
 /* ---------------------------------------------- 统一失败出口 */
@@ -298,14 +438,34 @@ async function fail(reason, detail) {
 
 /* ---------------------------------------------- 主流程 */
 
-async function runSend(providedClip) {
+/* pickText：弹窗里当前被选中的那条原文。
+   传了它就以它为准 —— 精确匹配候选列表，匹配不到就直接发这份原文。
+   这样即使列表在两次请求之间发生了变化，"你看到的那条"也一定是
+   "发出去的那条"，不会悄悄换成别的。
+   按快捷键时没有界面，不传，发 list[0]（= 最新那条）。 */
+async function runSend(providedClip, pickText) {
   const r = await resolveContent(providedClip);
   if (!r.ok) {
     return await fail(r.reason, r.detail);
   }
 
-  const content = r.content;
-  const source = r.source;
+  const want = String(pickText == null ? '' : pickText).trim();
+  let content = '';
+  let source = '';
+
+  if (want) {
+    const hit = r.list.find((x) => x.text === want);
+    if (hit) {
+      content = hit.text;
+      source = hit.source;
+    } else {
+      content = want;
+      source = '候选列表';
+    }
+  } else {
+    content = r.list[0].text;
+    source = r.list[0].source;
+  }
 
   let payload = null;
   try {
@@ -357,23 +517,22 @@ async function getPreview(providedClip) {
       restricted: !!r.restricted,
       reason: r.reason,
       detail: r.detail || '',
-      preview: '',
-      source: '',
-      totalChars: 0,
-      truncated: false,
-      note: ''
+      list: [],
+      note: '',
+      max: HISTORY_MAX,
+      stats: {}
     };
   }
 
-  const p = makePreview(r.content);
   return {
     ok: true,
     restricted: false,
-    source: r.source,
-    preview: p.preview,
-    totalChars: p.totalChars,
-    truncated: p.truncated,
-    note: r.note || ''
+    list: r.list.map(decorate),
+    note: r.note || '',
+    /* 上限，供弹窗在"没凑满"时说明原因 */
+    max: HISTORY_MAX,
+    /* 每一路来源各记下了几条 —— 弹窗底部会用一行小字显示 */
+    stats: (await readStore()).stats
   };
 }
 
@@ -389,11 +548,72 @@ async function getHealth() {
   }
 }
 
+/* ---------------------------------------------- 给已打开的标签页补装监听
+
+   manifest 里的 content_scripts 只对「之后加载的页面」生效。扩展一
+   重载（或刚装、刚升级），此刻已经开着的标签页里就没有 content.js ——
+   你在那些页面上怎么复制，扩展都听不见。表现就是：候选列表永远只有
+   弹窗自己读到的那一条。
+
+   所以这里在扩展被安装 / 更新 / 重载，以及 service worker 冷启动时，
+   主动给现有标签页补注入一次。content.js 自己带重复注入保护
+   （__qqSendSnifferReady），多注入几次等于空操作。
+
+   注意：要注入 iframe（allFrames），因为公众号 / 头条 / 知乎这类
+   编辑器页面的正文常常在一个 iframe 里，复制就发生在那个 iframe 内。 */
+
+const CS_KEY = 'csInjectedFor';
+
+async function injectIntoAllTabs() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch (e) {
+    return;
+  }
+
+  for (const t of (tabs || [])) {
+    if (!t || t.id == null) continue;
+    /* chrome:// 页面、扩展商店、被冻结或已丢弃的标签页都注入不了，
+       逐个 try 住，一个失败不影响其余的。 */
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: t.id, allFrames: true },
+        files: ['content.js']
+      });
+    } catch (e) { /* 跳过这个标签页 */ }
+  }
+}
+
+/* 一个浏览器会话里，每个版本只在冷启动时扫一次，避免 service worker
+   每次被唤醒都把几十个标签页过一遍。 */
+async function ensureContentScripts() {
+  const v = chrome.runtime.getManifest().version;
+  try {
+    const o = await chrome.storage.session.get(CS_KEY);
+    if (o && o[CS_KEY] === v) return;
+  } catch (e) { /* 读不到就照做 */ }
+
+  await injectIntoAllTabs();
+
+  try { await chrome.storage.session.set({ [CS_KEY]: v }); } catch (e) { /* 忽略 */ }
+}
+
+/* 安装 / 升级 / 在 chrome://extensions 里点「重新加载」都会走到这里，
+   此时强制补装一次 —— 不等版本号，保证"一点重载就立刻生效"。 */
+chrome.runtime.onInstalled.addListener(() => {
+  injectIntoAllTabs();
+});
+
+/* service worker 冷启动（浏览器刚打开、或闲置被回收后又被唤醒）。 */
+ensureContentScripts();
+
 /* ---------------------------------------------- 事件入口 */
 
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'send-to-qq') {
-    /* 按快捷键时页面还有焦点，剪贴板由 probePage 在页面里读。 */
+    /* 按快捷键时页面还有焦点，剪贴板由 probePage 在页面里读。
+       没有界面可挑，所以永远发最新那条（list[0]）。 */
     runSend();
   }
 });
@@ -402,13 +622,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
 
   if (msg.type === 'do-send') {
-    /* msg.clipboard 是弹窗自己读到的结果（弹窗才持有焦点）。 */
-    runSend(msg.clipboard).then(sendResponse).catch((e) => sendResponse({ ok: false, reason: String(e) }));
+    /* msg.clipboard 是弹窗自己读到的结果（弹窗才持有焦点）；
+       msg.pickText 是弹窗里当前选中的那条原文。 */
+    runSend(msg.clipboard, msg.pickText)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e) }));
     return true;
   }
   if (msg.type === 'get-preview') {
     getPreview(msg.clipboard).then(sendResponse).catch((e) => {
-      sendResponse({ ok: false, reason: String(e), detail: '', restricted: false });
+      sendResponse({ ok: false, reason: String(e), detail: '', restricted: false, list: [], note: '', max: HISTORY_MAX, stats: {} });
     });
     return true;
   }
@@ -418,6 +641,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'get-last') {
     sendResponse({ ok: true, last: lastResult });
+    return true;
+  }
+  if (msg.type === 'clip-captured') {
+    /* 来自 content.js：网页里刚发生一次复制/剪切/剪贴板快照。
+       msg.how 说明是哪一路（网页复制 / 网页剪切 / 切回页面 /
+       切回标签页 / 页面剪贴板），用于统计"哪一路没在工作"。 */
+    pushHistory(msg.text, msg.how)
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  if (msg.type === 'clear-history') {
+    /* 计数也一起归零 —— "清空"就该是干干净净的，不留半个数字让人猜。 */
+    editStore((st) => { st.items = []; st.stats = {}; return []; })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 });

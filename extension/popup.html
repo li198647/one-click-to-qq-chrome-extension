@@ -39,7 +39,7 @@
     .dot.bad { background: #E24B4A; }
     #statusText { flex: 1; }
 
-    /* 预览块：本次将要发送的内容 */
+    /* 候选列表：第 1 项永远是本次将要发送的那一份，下面跟更旧的内容 */
     .pv {
       border-radius: 8px;
       padding: 8px 10px 9px;
@@ -51,28 +51,44 @@
       font-size: 12px;
       font-weight: 500;
       color: #0C447C;
-      margin-bottom: 4px;
-    }
-    .pvBody {
-      font-size: 13px;
-      line-height: 1.5;
-      color: #0C447C;
-      word-break: break-all;
+      margin-bottom: 6px;
     }
     .pvMeta {
       font-size: 12px;
       line-height: 1.5;
       color: #185FA5;
-      margin-top: 4px;
+      margin-top: 6px;
       white-space: pre-line;
     }
+    .cand {
+      padding: 6px 9px;
+      border-radius: 6px;
+      margin-bottom: 5px;
+      background: #FFFFFF;
+      color: #5F5E5A;
+      font-size: 12.5px;
+      line-height: 1.45;
+      word-break: break-all;
+      cursor: pointer;
+    }
+    .cand:last-child { margin-bottom: 0; }
+    .cand:hover { background: #D6E8F8; }
+    .cand.sel {
+      background: #85B7EB;
+      color: #042C53;
+      font-weight: 500;
+      cursor: default;
+    }
+    .cand.sel:hover { background: #85B7EB; }
     .pv.warn { background: #FAEEDA; border-color: #BA7517; }
     .pv.warn .pvHead { color: #633806; }
-    .pv.warn .pvBody { color: #633806; }
     .pv.warn .pvMeta { color: #854F0B; }
+    .pv.warn .cand { color: #854F0B; background: #FFFFFF; }
+    .pv.warn .cand:hover { background: #F3DCB4; }
+    .pv.warn .cand.sel { background: #FAC775; color: #412402; }
+    .pv.warn .cand.sel:hover { background: #FAC775; }
     .pv.err { background: #FCEBEB; border-color: #A32D2D; }
     .pv.err .pvHead { color: #791F1F; }
-    .pv.err .pvBody { color: #791F1F; }
     .pv.err .pvMeta { color: #A32D2D; }
 
     button {
@@ -103,6 +119,12 @@
       border-radius: 4px;
       background: #F1EFE8;
     }
+    .lnk {
+      color: #185FA5;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+    .lnk:hover { color: #0C447C; }
     #detail {
       margin-top: 8px;
       font-size: 12px;
@@ -121,6 +143,15 @@
       background: #FCEBEB;
       color: #791F1F;
     }
+    /* 底部一行小字：每一路监听各记下了几条 + 当前版本号。
+       出问题时能一眼看出是哪一路没在工作。 */
+    .diag {
+      margin-top: 8px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #8A8880;
+      word-break: break-all;
+    }
   </style>
 </head>
 <body>
@@ -133,7 +164,7 @@
 
   <div class="pv" id="pv">
     <div class="pvHead" id="pvHead">正在读取剪贴板…</div>
-    <div class="pvBody" id="pvBody"></div>
+    <div id="pvList"></div>
     <div class="pvMeta" id="pvMeta"></div>
   </div>
 
@@ -141,11 +172,12 @@
 
   <div class="hint" id="lastLine"></div>
   <div class="hint">
-    快捷键 <kbd>Ctrl</kbd> + <kbd>B</kbd><br>
-    内容优先取「选中文字」，其次「剪贴板」，都没有就发当前页面的标题 + 链接。
+    快捷键 <kbd>Ctrl</kbd> + <kbd>B</kbd> 永远发最新那条，这里的选择不影响它。<br>
+    点一行可以改成发那条　·　<span class="lnk" id="clearLink">清空历史</span>
   </div>
 
   <div id="detail"></div>
+  <div class="diag" id="diag"></div>
 
   <script src="popup.js"></script>
 </body>
