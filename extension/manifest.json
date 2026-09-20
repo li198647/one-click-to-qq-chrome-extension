@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "一键发到 QQ",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "description": "把选中的文字、剪贴板内容或当前页面的标题+链接，一键发送到手机 QQ。",
   "permissions": [
     "scripting",
     "activeTab",
     "clipboardRead",
-    "offscreen",
     "notifications"
   ],
   "host_permissions": [

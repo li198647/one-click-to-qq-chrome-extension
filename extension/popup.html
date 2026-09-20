@@ -5,7 +5,7 @@
   <style>
     * { box-sizing: border-box; }
     body {
-      width: 300px;
+      width: 320px;
       margin: 0;
       padding: 14px;
       font-family: system-ui, "Microsoft YaHei", sans-serif;
@@ -38,10 +38,43 @@
     .dot.ok { background: #1D9E75; }
     .dot.bad { background: #E24B4A; }
     #statusText { flex: 1; }
-    #sub {
-      color: #5F5E5A;
-      font-size: 12px;
+
+    /* 预览块：本次将要发送的内容 */
+    .pv {
+      border-radius: 8px;
+      padding: 8px 10px 9px;
+      margin-bottom: 10px;
+      background: #E6F1FB;
+      border: 0.5px solid #185FA5;
     }
+    .pvHead {
+      font-size: 12px;
+      font-weight: 500;
+      color: #0C447C;
+      margin-bottom: 4px;
+    }
+    .pvBody {
+      font-size: 13px;
+      line-height: 1.5;
+      color: #0C447C;
+      word-break: break-all;
+    }
+    .pvMeta {
+      font-size: 12px;
+      line-height: 1.5;
+      color: #185FA5;
+      margin-top: 4px;
+      white-space: pre-line;
+    }
+    .pv.warn { background: #FAEEDA; border-color: #BA7517; }
+    .pv.warn .pvHead { color: #633806; }
+    .pv.warn .pvBody { color: #633806; }
+    .pv.warn .pvMeta { color: #854F0B; }
+    .pv.err { background: #FCEBEB; border-color: #A32D2D; }
+    .pv.err .pvHead { color: #791F1F; }
+    .pv.err .pvBody { color: #791F1F; }
+    .pv.err .pvMeta { color: #A32D2D; }
+
     button {
       width: 100%;
       padding: 9px;
@@ -98,8 +131,15 @@
     <span id="statusText">正在检查本地桥…</span>
   </div>
 
+  <div class="pv" id="pv">
+    <div class="pvHead" id="pvHead">正在读取剪贴板…</div>
+    <div class="pvBody" id="pvBody"></div>
+    <div class="pvMeta" id="pvMeta"></div>
+  </div>
+
   <button id="sendBtn">立即发送</button>
 
+  <div class="hint" id="lastLine"></div>
   <div class="hint">
     快捷键 <kbd>Ctrl</kbd> + <kbd>B</kbd><br>
     内容优先取「选中文字」，其次「剪贴板」，都没有就发当前页面的标题 + 链接。
