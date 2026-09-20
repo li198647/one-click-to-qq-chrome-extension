@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      width: 300px;
+      margin: 0;
+      padding: 14px;
+      font-family: system-ui, "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      color: #2C2C2A;
+      background: #ffffff;
+    }
+    h1 {
+      font-size: 14px;
+      font-weight: 500;
+      margin: 0 0 10px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      background: #F1EFE8;
+      margin-bottom: 10px;
+      line-height: 1.5;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #B4B2A9;
+      flex: 0 0 auto;
+    }
+    .dot.ok { background: #1D9E75; }
+    .dot.bad { background: #E24B4A; }
+    #statusText { flex: 1; }
+    #sub {
+      color: #5F5E5A;
+      font-size: 12px;
+    }
+    button {
+      width: 100%;
+      padding: 9px;
+      border: 0.5px solid #185FA5;
+      border-radius: 8px;
+      background: #E6F1FB;
+      color: #0C447C;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { background: #B5D4F4; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .hint {
+      margin-top: 10px;
+      color: #5F5E5A;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    kbd {
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      padding: 1px 5px;
+      border: 0.5px solid #B4B2A9;
+      border-radius: 4px;
+      background: #F1EFE8;
+    }
+    #detail {
+      margin-top: 8px;
+      font-size: 12px;
+      line-height: 1.6;
+      word-break: break-all;
+      display: none;
+    }
+    #detail.show {
+      display: block;
+      padding: 8px 9px;
+      border-radius: 8px;
+      background: #F1EFE8;
+      color: #444441;
+    }
+    #detail.err {
+      background: #FCEBEB;
+      color: #791F1F;
+    }
+  </style>
+</head>
+<body>
+  <h1>一键发到 QQ</h1>
+
+  <div class="row">
+    <span class="dot" id="dot"></span>
+    <span id="statusText">正在检查本地桥…</span>
+  </div>
+
+  <button id="sendBtn">立即发送</button>
+
+  <div class="hint">
+    快捷键 <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd><br>
+    内容优先取「选中文字」，其次「剪贴板」，都没有就发当前页面的标题 + 链接。
+  </div>
+
+  <div id="detail"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

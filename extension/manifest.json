@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "一键发到 QQ",
+  "version": "1.0.0",
+  "description": "把选中的文字、剪贴板内容或当前页面的标题+链接，一键发送到手机 QQ。",
+  "permissions": [
+    "scripting",
+    "activeTab",
+    "clipboardRead",
+    "offscreen",
+    "notifications"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:18761/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "一键发到 QQ（Ctrl+Shift+S）",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "commands": {
+    "send-to-qq": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "把选中文字 / 剪贴板 / 当前页面发到手机 QQ"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
