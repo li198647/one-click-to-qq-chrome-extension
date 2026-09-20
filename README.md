@@ -59,8 +59,44 @@
     ├── net_check.py        检测 QQ API 域名连通性（防代理 fake-IP 坑）
     ├── make_icons.py       生成扩展图标（可 --preview 出多方案对比图）
     ├── make-preview.js     生成打桩版弹窗预览页，改完 UI 不用真装扩展就能看
-    └── verify-extension.js 改完 extension/ 就跑它：语法 + 清单 + 37 项断言
+    ├── make-release-package.ps1  打 Release 附件：出「扩展包」与「完整包」两个 zip
+    └── verify-extension.js 改完 extension/ 就跑它：语法 + 清单 + 43 项断言
 ```
+
+`dist/`（发版产出的 zip）与 `packaging/`（安装说明、Release 文稿）说明见下方「下载安装」。
+
+---
+
+## 下载安装（给使用者）
+
+**不想看源码、只想装上用** → 去 [Releases](https://github.com/li198647/one-click-to-qq-chrome-extension/releases) 下载现成的 zip：
+
+| 文件 | 内容 | 什么时候下 |
+|---|---|---|
+| `one-click-to-qq-extension-vX.Y.Z.zip` | 只有浏览器扩展 | 已装过桥，只想更新扩展 |
+| `one-click-to-qq-kit-vX.Y.Z.zip` | 扩展 + 本地桥 + 完整说明 | **第一次装，选这个** |
+
+两个包解压后都带一份 `!安装说明-先看这个.txt`，照着走即可。核心只有两步：**解压到一个不会被挪走的文件夹** → `chrome://extensions` 开开发者模式 → 「加载已解压的扩展程序」。
+
+> ⚠️ **为什么不是 `.crx`**：Chrome 自 2018 年起禁止安装非应用商店来源的 `.crx`（双击提示"可能已损坏"，拖进扩展页也会被拦）。「解压 + 加载已解压的扩展程序」是目前唯一可行的本地安装方式。
+>
+> ⚠️ **解压出来的文件夹不能删、不能挪**，它是扩展本体，删了扩展就失效。
+
+### 怎么打出这两个包（维护者）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\make-release-package.ps1
+```
+
+脚本会从 `extension/manifest.json` **读出版本号**（不硬编码），把两个 zip 生成到 `dist/`，然后**解压回来逐项复检**：敏感文件（`config.json` / `state.json` / 日志 / `__pycache__`）、明文密钥（AppSecret / AppID / openid）、扩展 9 个必需文件是否齐全。任一中招就直接报 FAIL 并让脚本以非 0 退出。
+
+```powershell
+# 然后到网页上建 Release 并上传 dist\ 里的两个 zip：
+# https://github.com/li198647/one-click-to-qq-chrome-extension/releases/new
+```
+
+Release 的描述文案存在 `packaging/Release说明-vX.Y.Z.md`，直接复制粘贴。
+
 
 ---
 
@@ -231,7 +267,7 @@ Chrome **不提供任何「剪贴板变了」的通知接口** —— 扩展**�
 | `0.1.3` | 2026-09-20 | **修「候选只攒到 1 条」**：① 复制监听从"只主框架"改为**注入所有 iframe**（编辑器类页面的正文常在 iframe 里）；② 新增「**切回页面 / 标签页时的剪贴板快照**」与「**有焦点时的 2 秒巡检**」，兜住「网页自带的复制按钮」和「在别处程序里复制」；③ 扩展安装/更新/重载时**主动给已打开的标签页补注入** `content.js`（重载后不用再手动刷新标签页）；④ 候选没凑满 4 条时弹窗直接写明原因 |
 | `0.1.4` | 2026-09-20 | **修「连着复制 4 条、只留下最后 1 条」**。两个真凶：① `content.js` 用"标志位就 return"防重复注入 —— 扩展重载后旧实例的监听器还挂着但**发不出消息**，新实例又被标志位挡住，整页监听**一直是哑的**；改为 **teardown 式**：新实例先把旧实例的监听器/定时器全部拆掉再重装。② `chrome.storage` **没有事务**，4 条消息几乎同时到达时 4 次"读-改-写"互相覆盖 → 所有写入**串行进一条 Promise 链**。另加：copy 事件取不到文字时**延后补读一次剪贴板**；弹窗底部新增一行「**记录来源：网页复制 ×3 · 定时巡检 ×2 · v0.1.4**」，出问题时一眼看出哪一路没在工作 |
 | `0.1.5` | 2026-09-20 | **改版式 + 换图标**。① 「将要发送」的文字**单独用一个实线矩形框住**，和候选列表拆成上下两块（候选是"能挑的"，框里是"定下的"），点候选时上面的框同步跟着换；② 图标从"蓝底白箭头"换成**黑色企鹅**（侧身、几何剪影、白色圆角底），与 QQ 的正面圆胖企鹅在造型上明确区分；③ 图标补齐 **32px**（高分屏工具栏用）；④ 新增 `tools/make-preview.js`：生成打桩版弹窗预览页，改 UI 不用真装扩展就能看；⑤ 自检脚本加了图标尺寸与版式结构的断言（30 项 → 37 项） |
-| `1.0.0` | 2026-09-20 | **正式版**。内容即 `0.1.6`（微调版式：发送按钮缩成 Windows 对话框「是/否」尺寸并搬到标题行最右端、「将要发送」标题字号降到 11px、去掉「共 N 字」那一行），**本地验证通过后正式定版** —— 从 `0.1.1` 起跑了 5 个迭代版把功能与版式都磨稳了，故结束 `0.x` 预发布阶段 |
+| `1.0.0` | 2026-09-20 | **正式版**。内容即 `0.1.6`（微调版式：发送按钮缩成 Windows 对话框「是/否」尺寸并搬到标题行最右端、「将要发送」标题字号降到 11px、去掉「共 N 字」那一行），**本地验证通过后正式定版** —— 从 `0.1.1` 起跑了 5 个迭代版把功能与版式都磨稳了，故结束 `0.x` 预发布阶段。同时**首次提供现成的下载包**：新增 `tools/make-release-package.ps1`，产出「扩展包」与「完整包」两个 zip 作为 Release 附件，包里附安装说明 |
 
 > **版本号怎么走到这里的**：第一版 manifest 里随手填的 `1.0.0` 从未发布（无 tag、无提交记录），此后老老实实按 `0.1.1 → 0.1.2 → … → 0.1.6` 往上迭代。`0.1.2`／`0.1.3` 因本地验证未通过而**未单独发版**，改动分别并入 `0.1.4`／`0.1.5`。`0.1.6` 经本地验证通过后，作为**功能与版式均已稳定**的首个正式版发布为 **`1.0.0`**。
 
@@ -355,3 +391,17 @@ MV3 的 service worker 随时会被回收（闲置约 30 秒），所以历史**
 - **截断中文/emoji 要用 grapheme 而不是 `.slice()`**。`.slice()` 按 UTF-16 码元切，会把 emoji 劈成半个、显示成乱码方块。本项目用 `Intl.Segmenter`（按"人眼看到的一个字"切），并保留 `Array.from()` 兜底。
 - **Chromium/Electron 应用默认不构建无障碍树**。要先打开 Windows 的"读屏软件正在运行"标志（`SPI_SETSCREENREADER`），UI Automation 才能读到 Electron 应用的 DOM 结构 —— 这是 `tools/probe_uia*.py` 能跑通的前提。
 - **代理的 fake-IP 模式可能干扰 Python 直连**。`tools/net_check.py` 会验证域名是否解析到真实 IP。
+- ⚠️ **含中文的 `.ps1` 脚本必须存成「UTF-8 带 BOM」**，否则 Windows PowerShell 5.1 会按**当前代码页（本机是 GBK）**去解码，中文注释全变乱码，还会连带把引号/花括号解错，报一堆莫名其妙的 `Missing closing '}'`、`The string is missing the terminator`。`tools/make-release-package.ps1` 就踩过这个 —— 它明明语法正确，却完全无法执行。补 BOM 一行搞定：
+
+  ```powershell
+  $t = [System.IO.File]::ReadAllText($p, (New-Object System.Text.UTF8Encoding $false))
+  [System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding $true))
+  ```
+
+  改完 `.ps1` 顺手做个真语法检查，别靠肉眼：
+  ```powershell
+  $e = $null
+  [System.Management.Automation.Language.Parser]::ParseFile($p, [ref]$null, [ref]$e)
+  if ($e.Count) { $e | ForEach-Object { $_.Message } } else { 'PARSE_OK' }
+  ```
+- ⚠️ **打 zip 的脚本，复检路径要多算一层**。`Compress-Archive -Path <文件夹>` 会把**该文件夹本身**放进 zip 顶层，所以"解压回来检查文件是否齐全"时，路径是 `解压根\包名\文件`，不是 `解压根\文件`。漏算这层会让齐全性检查**全部误报缺失**（`make-release-package.ps1` 第一版就是这么错的）。
