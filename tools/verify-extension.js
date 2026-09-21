@@ -474,6 +474,59 @@ check('v1.0.5: manifest / 桥 / 宿主 三处版本号一致',
       ' 桥=' + (mb ? mb[1] : '?') + ' 宿主=' + (mh ? mh[1] : '?');
   })());
 
+/* ---------- v1.0.6：桥缩到系统托盘 ----------
+   静态部分只钉"结构上不许犯的错"；真正跑起来对不对由 tools/test_tray.py 验。 */
+let traySrc = '';
+try { traySrc = fs.readFileSync(path.join(root, 'bridge', 'qq_tray.py'), 'utf8'); } catch (e) { /* 忽略 */ }
+let icoBuf = null;
+try { icoBuf = fs.readFileSync(path.join(root, 'bridge', 'qq.ico')); } catch (e) { /* 忽略 */ }
+
+check('v1.0.6: 托盘模块在', !!traySrc);
+/* ⚠️ GetConsoleWindow 在 kernel32，不在 user32 —— 想当然写 user32 会 AttributeError，
+   而且这条 AttributeError 只会让托盘静默起不来（桥本身照跑），极难发现。 */
+check('v1.0.6: GetConsoleWindow 取自 kernel32（不是 user32）',
+  /k32\.GetConsoleWindow/.test(traySrc) && !/u32\.GetConsoleWindow/.test(traySrc));
+/* 窗口过程是 ctypes 回调：对象被 GC 掉之后系统再回调就是崩溃 */
+check('v1.0.6: 窗口过程留了引用（被 GC 掉会直接崩进程）',
+  /self\._wndproc = WNDPROC\(/.test(traySrc));
+/* 缺 argtypes 时 DefWindowProcW 会因 LPARAM 溢出抛错，而 ctypes 会静默吞掉 */
+check('v1.0.6: DefWindowProcW 声明了 argtypes（否则报错被静默吞掉）',
+  /u32\.DefWindowProcW\.argtypes/.test(traySrc));
+check('v1.0.6: 托盘菜单里有「退出」', /CMD_QUIT/.test(traySrc) && /退出/.test(traySrc));
+check('v1.0.6: 图标从 .ico 加载（LoadImage 不认 PNG），且退回到系统图标',
+  /LoadImageW\(/.test(traySrc) && /LR_LOADFROMFILE/.test(traySrc) &&
+  /IDI_APPLICATION/.test(traySrc));
+check('v1.0.6: qq.ico 存在、且是合法 ICO（reserved=0 type=1）',
+  !!icoBuf && icoBuf.length > 1000 && icoBuf[0] === 0 && icoBuf[1] === 0 &&
+  icoBuf[2] === 1 && icoBuf[3] === 0 && (icoBuf[4] | (icoBuf[5] << 8)) >= 1,
+  icoBuf ? icoBuf.length + ' 字节' : '缺失');
+
+/* 🔴 这个项目里最要紧的一条：**只有托盘真的挂上了，才允许藏窗口 / 摘 X**。
+   顺序反了 = 万一把托盘起不来，用户就再也找不到退出入口。 */
+check('v1.0.6: 铁律 —— 只在 _add() 成功之后才藏窗口 / 摘 X',
+  (() => {
+    const a = traySrc.indexOf('if not self._add():');
+    const ok = traySrc.indexOf('self._ok = True');
+    if (a < 0 || ok <= a) return false;
+    // 只看 self._ok = True 之后的这一段 —— 否则 indexOf 命中的是
+    // 文件前面那些函数**定义**，等于什么都没验
+    const tail = traySrc.slice(ok);
+    return tail.indexOf('self._old_style = strip_close_button()') >= 0 &&
+      tail.indexOf('hide_console()') >= 0;
+  })());
+check('v1.0.6: 托盘起不来时把消息窗口销毁掉（免得留个没有窗口过程的窗口）',
+  /NIM_ADD\) 失败，托盘没起来[\s\S]{0,300}?DestroyWindow\(self\._hwnd\)/.test(traySrc));
+/* 托盘消息循环一旦没了（别人发 WM_CLOSE、或出异常），就必须把窗口还回去 —— 
+   否则图标没了、窗口又藏着、X 又摘着 = 用户没有任何出口 */
+check('v1.0.6: 托盘一消失就把窗口还回来（WM_CLOSE 那一支也调 _restore_ui）',
+  /def _restore_ui/.test(traySrc) &&
+  /if msg == WM_CLOSE:\s*\n\s*self\._restore_ui\(\)/.test(traySrc));
+check('v1.0.6: 桥侧起托盘失败不拦启动（只记一条 warning）',
+  /def start_tray\(\)/.test(bridgePy) &&
+  /托盘图标没能挂上 —— 窗口继续留在任务栏/.test(bridgePy));
+check('v1.0.6: 桥退出时会摘图标、还窗口样式（finally 里 cleanup）',
+  /TRAY\.cleanup\(\)/.test(bridgePy));
+
 check('v1.0.4: 宿主按官方协议读 4 字节小端长度', /struct\.unpack\("<I", head\)/.test(host));
 check('v1.0.4: 宿主回复也带 4 字节长度前缀', /struct\.pack\("<I", len\(payload\)\)/.test(host));
 check('v1.0.4: 宿主把 stdout 切二进制（避免 CRLF 转换）',

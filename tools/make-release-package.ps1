@@ -82,9 +82,12 @@ Say "=== 组装完整包（扩展 + 桥）==="
 # ⚠️ 这三个（1.0.4 新增）不是可选的：少了它们，装完整包的人点弹窗上那个
 #    「启动本地桥」按钮会永远失败 —— 宿主入口、宿主逻辑、兜底登记脚本，
 #    缺一个那条链就断。所以它们必须留在这张白名单里。
+# ⚠️ 后两个（1.0.6 新增）同理：少了 qq_tray.py 桥起不来（import 失败虽然
+#    被兜住了，但托盘就没了）；少了 qq.ico 托盘只能用系统默认图标。
 $kitFiles = @("qq_bridge.py", "send_test.py", "probe_url.py", "start_bridge.bat",
               "config.example.json",
-              "qq_host.bat", "qq_native_host.py", "重新登记.bat")
+              "qq_host.bat", "qq_native_host.py", "重新登记.bat",
+              "qq_tray.py", "qq.ico")
 $d2 = Join-Path $stage $kitPkgName
 New-Item -ItemType Directory -Path $d2 -Force | Out-Null
 Copy-Item -Path $extDir -Destination (Join-Path $d2 "extension") -Recurse -Force

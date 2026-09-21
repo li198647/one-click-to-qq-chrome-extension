@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-QQ 转发助手 · 本地桥程序  v1.0.5
+QQ 转发助手 · 本地桥程序  v1.0.6
 
 职责：
   1. 用官方 SDK 连上 QQ 机器人（WebSocket，不需要公网 IP、不需要备案域名）
@@ -44,7 +44,7 @@ LOG_DIR = os.path.join(BASE, "log")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_PATH = os.path.join(LOG_DIR, "bridge_%s.log" % datetime.now().strftime("%Y%m%d"))
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 
 _log = logging.getLogger("bridge")
 
@@ -94,6 +94,88 @@ def set_console_title(title=CONSOLE_TITLE):
         ctypes.windll.kernel32.SetConsoleTitleW(ctypes.c_wchar_p(title))
         return True
     except Exception:
+        return False
+
+
+# ---------------------------------------------------------------- 图标（托盘用）
+
+ICON_PATH = os.path.join(BASE, "qq.ico")
+
+
+# ---------------------------------------------------------------- 托盘（1.0.6）
+
+TRAY = None
+
+
+def tray_tooltip():
+    return "QQ 转发助手 · 本地桥（右键退出）"
+
+
+def start_tray():
+    """把桥缩到系统托盘（任务栏右下角）。
+
+    ⚠️ 顺序是刻意的：**只有托盘真的挂上了，qq_tray 才会去藏窗口、摘掉 X**。
+    绝不能反过来 —— 万一托盘图标没出现而窗口又被藏、X 又被摘，
+    就再也没有退出入口了。所以这里托盘起不来时，窗口原封不动留在任务栏。
+
+    返回 True 表示托盘可用（窗口已缩进去）。
+    """
+    global TRAY
+    try:
+        import qq_tray
+    except Exception:
+        _log.warning("托盘模块没导入成功，窗口继续留在任务栏:\n%s",
+                     traceback.format_exc())
+        return False
+
+    def on_command(name):
+        if name == "show":
+            qq_tray.show_console()
+            _log.info("托盘菜单：把窗口叫出来了")
+        elif name == "hide":
+            qq_tray.hide_console()
+            _log.info("托盘菜单：窗口缩回托盘")
+        elif name == "logs":
+            try:
+                os.startfile(LOG_DIR)
+            except Exception as e:
+                _log.warning("打开日志文件夹失败: %r", e)
+        elif name == "quit":
+            _log.info("托盘菜单：退出（关掉桥）")
+            try:
+                if TRAY:
+                    TRAY.cleanup()
+            except Exception:
+                pass
+            logging.shutdown()      # 先把日志刷到磁盘再走
+            os._exit(0)
+
+    def on_message(text):
+        # 托盘只报"值得知道的事"，可能是提示也可能是失败 —— 按措辞分级
+        if any(k in str(text) for k in ("失败", "异常", "出错")):
+            _log.warning("托盘: %s", text)
+        else:
+            _log.info("托盘: %s", text)
+
+    try:
+        tray = qq_tray.Tray(
+            tooltip=tray_tooltip(),
+            icon_path=ICON_PATH,
+            on_command=on_command,
+            on_message=on_message,
+        )
+        TRAY = tray                # 先留引用：窗口过程被 GC 掉会让进程崩溃
+        if tray.start():
+            _log.info("已缩到系统托盘 —— 任务栏右下角那个图标就是它。")
+            _log.info("  要退出：在那个图标上右键 → 退出（关掉桥）")
+            _log.info("  想临时看日志：右键 → 显示日志窗口")
+            return True
+        _log.warning("托盘图标没能挂上 —— 窗口继续留在任务栏。"
+                     "直接关窗口、或在窗口里按 Ctrl+C 都能停桥。")
+        return False
+    except Exception:
+        _log.warning("起托盘时出错，窗口继续留在任务栏:\n%s",
+                     traceback.format_exc())
         return False
 
 
@@ -822,6 +904,9 @@ if __name__ == "__main__":
     # 顺手让扩展那个「启动本地桥」按钮能生效。失败也不拦着桥启动。
     self_register_host()
 
+    # 缩到系统托盘（起不来就老实在任务栏待着，见 start_tray 的注释）
+    start_tray()
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -829,3 +914,10 @@ if __name__ == "__main__":
     except Exception:
         _log.error("启动失败:\n%s", traceback.format_exc())
         time.sleep(5)
+    finally:
+        # 正常退出也把托盘图标摘掉、窗口样式还回去（白留一个死图标不好看）
+        try:
+            if TRAY:
+                TRAY.cleanup()
+        except Exception:
+            pass

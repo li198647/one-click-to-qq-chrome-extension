@@ -991,8 +991,8 @@ async function getHealth() {
        → chrome.runtime.sendNativeMessage('com.mumu.qq_bridge', {cmd:'start'})
          → Chrome 按注册表找到 bridge\qq_host.bat 并把它拉起来
            → 它执行 qq_native_host.py
-             → 那个脚本先看 18761 端口在不在，不在才拉起 start_bridge.bat
-               （最小化到任务栏）
+            → 那个脚本先看 18761 端口在不在，不在才拉起 start_bridge.bat
+              （先最小化到任务栏，桥起来之后自己缩进系统托盘 —— 1.0.6 起）
 
    「宿主在哪」这份登记信息由**桥自己**在启动时写好（它一启动就知道自己
    的绝对路径），所以正常情况下这里一次都不会失败。真失败了也不许静默 ——

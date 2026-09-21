@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-QQ 转发助手 · Native Messaging 宿主  v1.0.5
+QQ 转发助手 · Native Messaging 宿主  v1.0.6
 
 这个文件只有一个职责：让浏览器扩展能"喊一声"就把本地桥拉起来。
 
@@ -15,7 +15,9 @@ Native Messaging：扩展先跟一个"宿主程序"说话，由宿主去启动�
         → Chrome 按注册表找到 qq_host.bat 并把它拉起来
           → 它执行本文件
             → 本文件先看 18761 端口在不在
-              → 不在才拉起 start_bridge.bat（最小化到任务栏）
+              → 不在才拉起 start_bridge.bat
+                  （先用"最小化到任务栏"开出来，理由见下面 SW_SHOWMINNOACTIVE
+                    那段；桥自己起来之后会再缩进系统托盘 —— 1.0.6 起）
 
 协议（Chrome 官方规定，不能改）
 ------------------------------
@@ -64,12 +66,17 @@ CONFIG_PATH = os.path.join(BASE, "config.json")
 LOG_DIR = os.path.join(BASE, "log")
 HOST_LOG = os.path.join(LOG_DIR, "native_host.log")
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 DEFAULT_PORT = 18761
 MAX_MSG = 1024 * 1024
 
 # Windows 常量。SW_SHOWMINNOACTIVE = 7：新开的控制台**最小化到任务栏**
-# 且不抢焦点 —— 就是木木选的"任务栏留图标"那种。
+# 且不抢焦点。
+#
+# ⚠️ 为什么不干脆用 SW_HIDE 一步藏掉：这个窗口是**桥的兜底出口**。
+#    桥要是启动就崩了，那个窗口里留着 traceback —— 藏起来就什么都看不见了。
+#    所以先"最小化"开出来（看得见、能读报错），等桥自己跑起来、
+#    确认托盘挂上了，再由 qq_tray 把窗口藏进去（1.0.6）。
 SW_SHOWMINNOACTIVE = 7
 CREATE_NEW_CONSOLE = 0x00000010
 

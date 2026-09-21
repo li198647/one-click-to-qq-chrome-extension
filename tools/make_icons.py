@@ -19,6 +19,9 @@ from PIL import Image, ImageDraw
 
 OUT = r"E:\workbuddywork\一键发到qq\extension\icons"
 TOOLS = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(TOOLS)
+# 桥那个托盘图标（v1.0.6）从这里取，见 write_tray_icon()
+TRAY_ICO = os.path.join(ROOT, "bridge", "qq.ico")
 
 BLACK = (28, 28, 30, 255)
 WHITE = (255, 255, 255, 255)
@@ -147,6 +150,22 @@ def write_icons(key="A"):
     for n in (16, 32, 48, 128):
         render(key, n).save(os.path.join(OUT, "icon%d.png" % n), optimize=True)
     print("icons written to " + OUT + "  (variant " + key + ")")
+    write_tray_icon()
+
+
+def write_tray_icon():
+    """把图标打包成一个多尺寸 .ico，给桥的托盘图标用（v1.0.6）。
+
+    为什么是打包而不是重新 render：直接从 `extension/icons/*.png` 读，
+    托盘图标和扩展图标就**必然是同一份**。以后改图标造型也不会漏掉它。
+
+    为什么托盘非得用 .ico：`LoadImageW(..., IMAGE_ICON, LR_LOADFROMFILE)`
+    只认 .ico / .bmp / .cur，**不认 PNG**。
+    """
+    os.makedirs(os.path.dirname(TRAY_ICO), exist_ok=True)
+    big = Image.open(os.path.join(OUT, "icon48.png")).convert("RGBA")
+    big.save(TRAY_ICO, format="ICO", sizes=[(16, 16), (32, 32), (48, 48)])
+    print("tray icon written to " + TRAY_ICO)
 
 
 def write_preview():
