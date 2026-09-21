@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "一键发到 QQ",
-  "version": "1.0.0",
-  "description": "把选中的文字、剪贴板内容或当前页面的标题+链接，一键发送到手机 QQ。弹窗里可查看并改选最近 4 条内容。",
+  "version": "1.0.1",
+  "description": "把选中的文字、剪贴板内容、剪贴板里的图片或网页图片，一键发送到手机 QQ。弹窗里可查看并改选最近 4 条文字。",
   "permissions": [
     "scripting",
     "activeTab",
     "clipboardRead",
     "notifications",
-    "storage"
+    "storage",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -22,6 +23,7 @@
         "<all_urls>"
       ],
       "js": [
+        "imageutil.js",
         "content.js"
       ],
       "run_at": "document_start",
@@ -44,7 +46,7 @@
         "default": "Ctrl+B",
         "mac": "Command+B"
       },
-      "description": "把选中文字 / 剪贴板 / 当前页面发到手机 QQ"
+      "description": "把选中文字 / 剪贴板（含图片）/ 当前页面发到手机 QQ"
     }
   },
   "icons": {

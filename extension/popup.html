@@ -89,9 +89,32 @@
       word-break: break-all;
       min-height: 34px;
     }
+
+    /* v1.0.1：这一次要发的是图片时，上面那个文字框换成一张**真缩略图**。
+       「到底要发哪张」看这里就够了，不用去猜候选行里那行小字。
+       宽度限 100%、高度限 160px —— 手机截图是竖长条，只限宽的话会把
+       弹窗撑成一根竹竿。 */
+    .sbThumbWrap { display: none; }
+    .sbThumb {
+      display: block;
+      max-width: 100%;
+      max-height: 160px;
+      border: 1px solid #185FA5;
+      border-radius: 6px;
+      background: #FFFFFF;
+    }
+    .sbThumbMeta {
+      margin-top: 5px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #0C447C;
+      word-break: break-all;
+    }
+
     .sendbox.err { background: #FCEBEB; border-color: #A32D2D; }
     .sendbox.err .sbHead { color: #791F1F; }
     .sendbox.err .sbText { border-color: #A32D2D; color: #791F1F; }
+    .sendbox.err .sbThumb { border-color: #A32D2D; }
 
     /* ---------------------------------------------- 候选（另一块） */
     .candsHead {
@@ -124,6 +147,9 @@
     .cand:hover { background: #EEF4FB; border-color: #85B7EB; }
     .candNo { flex: 0 0 auto; color: #B4B2A9; font-size: 11px; line-height: 1.7; }
     .candTxt { flex: 1; }
+    /* v1.0.1：图片候选行前面的小徽标。行高刻意和文字行保持一致 ——
+       真在候选行里画缩略图会让那一行比其它三行高，列表参差不齐。 */
+    .candIcon { flex: 0 0 auto; align-self: center; color: #185FA5; }
     /* 当前选中：深色底 + 蓝框，和上面那个框里是同一段文字 */
     .cand.sel {
       background: #85B7EB;
@@ -226,10 +252,15 @@
   </div>
 
   <!-- 将要发送：文字单独被框住。只有标题 + 文字本体两块，
-       原来那行「共 N 字」已按木木要求去掉。 -->
+       原来那行「共 N 字」已按木木要求去掉。
+       v1.0.1：这一次要发的是图片时，下面那个文字矩形换成真缩略图。 -->
   <div class="sendbox" id="sendBox">
     <div class="sbHead" id="sbHead">正在读取剪贴板…</div>
     <div class="sbText" id="sbText"></div>
+    <div class="sbThumbWrap" id="sbThumbWrap">
+      <img class="sbThumb" id="sbThumb" alt="将要发送的图片">
+      <div class="sbThumbMeta" id="sbThumbMeta"></div>
+    </div>
   </div>
 
   <!-- 候选：另起一块 -->
@@ -249,6 +280,8 @@
   <div id="detail"></div>
   <div class="diag" id="diag"></div>
 
+  <!-- imageutil.js 必须在 popup.js 之前：读剪贴板里的图片要用它。 -->
+  <script src="imageutil.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

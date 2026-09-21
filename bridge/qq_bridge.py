@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-QQ 转发助手 · 本地桥程序  v1.0.0
+QQ 转发助手 · 本地桥程序  v1.0.1
 
 职责：
   1. 用官方 SDK 连上 QQ 机器人（WebSocket，不需要公网 IP、不需要备案域名）
@@ -9,13 +9,25 @@ QQ 转发助手 · 本地桥程序  v1.0.0
 
 端口接口：
   GET  /health    查看桥的状态
-  POST /send      {"content": "要发的内容"}  -> 真正发出去
+  POST /send      {"content": "要发的文字"}
+              或  {"image": {"data_url": "data:image/png;base64,...", "name": "..."}}
   GET  /lastlog   看最近日志
+
+v1.0.1 新增图片发送。图片相关的三件事全部放在这一侧做，扩展那边只负责
+读图、转 base64、读出宽高：
+  · 用 Pillow 探测**真实**格式（剪贴板和某些服务器给的 type 经常不准）
+  · 超过 20MB 就缩尺寸（腾讯会把超限的图降级成"文件卡片"，手机上要
+    点开下载才看得见，不再是直接显示的大图）
+  · 原格式被接口拒了就转 PNG 再试一次
+放这边的另一个理由：只有一条实现，两条来源（剪贴板图片 / 右键网页图片）
+的行为必然一致。
 
 启动：双击 start_bridge.bat
 """
 
 import asyncio
+import base64
+import io
 import json
 import os
 import re
@@ -32,7 +44,7 @@ LOG_DIR = os.path.join(BASE, "log")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_PATH = os.path.join(LOG_DIR, "bridge_%s.log" % datetime.now().strftime("%Y%m%d"))
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 _log = logging.getLogger("bridge")
 
@@ -112,7 +124,17 @@ def content_has_url(text):
 
 import botpy  # noqa: E402
 from botpy.message import C2CMessage  # noqa: E402
+import aiohttp  # noqa: E402
 from aiohttp import web  # noqa: E402
+
+# Pillow 只在发图片时用得上。没装也不该让整个桥起不来 —— 文字那套照旧，
+# 只是图片这条路会给出"没装 Pillow"的明确错误。
+try:
+    from PIL import Image
+    HAVE_PIL = True
+except Exception:  # pragma: no cover
+    Image = None
+    HAVE_PIL = False
 
 CLIENT = None
 
@@ -246,6 +268,354 @@ async def do_send(content):
     return out
 
 
+# ---------------------------------------------------------------- 图片
+#
+# 官方接口要两步：先上传拿到 file_info，再用 msg_type=7 把 file_info 发出去。
+#
+# ⚠️ 上传走的是自建的 HTTP 请求（aiohttp），**不是** botpy 的
+#    post_c2c_file()。原因：那个包装函数的签名里根本没有 file_data ——
+#    它只认 url / upload_id / file_name，走的是"腾讯自己去下载这个地址"
+#    或"分片上传"两条路。本机没有公网地址，url 那条实测回
+#    400「上传URL错误」（说明确实是腾讯的服务器去下这个地址）；
+#    分片上传能用，但要 4 次调用。
+#    实测 file_data（base64 直传）一次调用就成，所以走它。
+#
+# ⚠️ 已知风险记在这里：file_data 在官方文档的请求体参数表里**没写**，
+#    属于"能跑但没承诺"。哪天真被关掉，备用路径是改成分片上传。
+
+SOFT_LIMIT = 20 * 1024 * 1024      # 超过它，腾讯把图片降级成"文件卡片"
+HARD_LIMIT = 190 * 1024 * 1024     # 再大接口直接拒
+SHRINK_STEPS = [2560, 1600, 1024]  # 超软限时逐级降长边，先试 2560
+
+# aiohttp 默认只收 1MB 的请求体，而一张 4MB 的截图转成 base64 就是 5.3MB
+# —— 不放开的话图片请求会被直接挡成 413，连日志里都看不出原因。
+# 抽成模块级常量是为了让测试能引用同一个值，不用抄一遍数字。
+MAX_BODY_BYTES = 256 * 1024 * 1024
+
+_TOKEN = {"value": "", "expire_at": 0.0}
+
+
+async def get_access_token():
+    """自己取 access_token 并缓存到过期前 60 秒。
+
+    ⚠️ 为什么不用 botpy 内部那个 _token：那是私有结构（`CLIENT.http._token`
+    / `Route` / `check_session`），SDK 一升级就可能改名，桥会莫名其妙地挂。
+    这里走的是腾讯**公开文档**的取 token 接口，稳得多。
+
+    ⚠️ 那么"自己再取一次 token，会不会把 botpy 正在用的那个顶掉、害它掉线"？
+    查过桥自己的日志（bridge/log/bridge_YYYYMMDD.log）：botpy **本来就在
+    大约每小时重连一次，并且每次重连都重新取一次 token**（日志里
+    `[botpy] 重连启动...` + `access_token expires_in N` 成对出现，一天几十次）。
+    也就是说"新旧 token 并存"是 botpy 一直在经历的状态，不是我们引入的。
+    另外 WebSocket 一旦建连就不靠这个 token 做心跳了，token 只用于建连和
+    REST 调用 —— 所以即便真有影响，后果也是"掉线后自动重连一次"，而不是
+    永久失效。实测：连发多次真图（每次新进程都会取一次 token）之后查
+    /health，`bot_ready` 仍为 true、`send_fail` 为 0。
+    """
+    now = time.time()
+    if _TOKEN["value"] and now < _TOKEN["expire_at"] - 60:
+        return _TOKEN["value"]
+
+    appid = str(CFG.get("appid") or "").strip()
+    secret = str(CFG.get("secret") or "").strip()
+    if not (appid and secret):
+        raise RuntimeError("config.json 里没填 appid / secret")
+
+    async with aiohttp.ClientSession() as s:
+        async with s.post(
+            "https://bots.qq.com/app/getAppAccessToken",
+            json={"appId": appid, "clientSecret": secret},
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as r:
+            data = await r.json(content_type=None)
+
+    tok = (data or {}).get("access_token")
+    if not tok:
+        raise RuntimeError("取 access_token 失败: %s" % (str(data)[:200],))
+    _TOKEN["value"] = tok
+    _TOKEN["expire_at"] = now + int((data or {}).get("expires_in") or 7200)
+    return tok
+
+
+async def api_post(url, body, timeout=180):
+    """带鉴权 POST 到 openapi。返回 (http_status, body)。"""
+    tok = await get_access_token()
+    appid = str(CFG.get("appid") or "").strip()
+    headers = {
+        "Authorization": "QQBot " + tok,
+        "Content-Type": "application/json",
+        "X-Union-Appid": appid,
+    }
+    async with aiohttp.ClientSession() as s:
+        async with s.post(
+            url, json=body, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as r:
+            status = r.status
+            raw = await r.text()
+    try:
+        return status, json.loads(raw)
+    except Exception:
+        return status, {"_raw": raw[:400]}
+
+
+def human_size(n):
+    n = float(n or 0)
+    if n < 1024:
+        return "%d B" % n
+    if n < 1024 * 1024:
+        return "%d KB" % round(n / 1024)
+    return "%.1f MB" % (n / 1024.0 / 1024.0)
+
+
+def sanitize_name(name, ext):
+    """洗出一个能安全当文件名的名字。扩展名一律以探测到的真实格式为准，
+    不信原始文件名 —— 后者经常是假的（比如 .jpg 里面其实是 webp）。"""
+    base = re.sub(r'[\\/:*?"<>|\s]+', "_", str(name or "").strip())
+    base = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", base)
+    base = base[-60:] if len(base) > 60 else base
+    if not base:
+        base = "image"
+    return "%s.%s" % (base, ext)
+
+
+def decode_data_url(data_url):
+    """拆 dataURL -> (mime, bytes)。解不开时 bytes 为 None。"""
+    m = re.match(r"^data:([^;,]*)(;base64)?,([\s\S]*)$", str(data_url or ""))
+    if not m:
+        return "", None
+    mime = (m.group(1) or "").strip().lower()
+    b64 = re.sub(r"\s+", "", m.group(3) or "")
+    try:
+        return mime, base64.b64decode(b64)
+    except Exception:
+        return mime, None
+
+
+def guess_ext(raw):
+    """没有 Pillow 时的兜底：按文件头猜。"""
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    if raw[:2] == b"BM":
+        return "bmp"
+    return "png"
+
+
+def normalize_image(raw):
+    """探测真实格式；超过软限就缩尺寸。
+
+    返回 (bytes, ext, note)。note 非空表示动过原图，必须告诉木木。
+
+    · 格式以**图片字节头**为准（PIL 探测），不信 dataURL 上那个 mime
+    · 超限时只降分辨率、不换格式：截图上的小字用 JPEG 压会糊，
+      而缩尺寸只掉分辨率，字还是那个字。原图是 jpg 的才存回 jpg。
+    """
+    if not HAVE_PIL:
+        return raw, guess_ext(raw), ""
+
+    try:
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+    except Exception:
+        return raw, guess_ext(raw), ""
+
+    fmt = (im.format or "").upper()
+    ext = {"PNG": "png", "JPEG": "jpg", "GIF": "gif",
+           "WEBP": "webp", "BMP": "bmp"}.get(fmt, "png")
+
+    if len(raw) <= SOFT_LIMIT:
+        return raw, ext, ""
+
+    w0, h0 = im.size
+    cur0 = max(w0, h0)
+    best = None
+
+    for long_edge in SHRINK_STEPS:
+        if cur0 <= long_edge:
+            continue
+        ratio = float(long_edge) / float(cur0)
+        nw = max(1, int(round(w0 * ratio)))
+        nh = max(1, int(round(h0 * ratio)))
+        try:
+            small = im.resize((nw, nh), Image.LANCZOS)
+        except Exception:
+            continue
+        save_fmt = fmt if fmt in ("PNG", "JPEG", "WEBP", "BMP") else "PNG"
+        if save_fmt == "JPEG" and small.mode not in ("RGB", "L"):
+            small = small.convert("RGB")
+        buf = io.BytesIO()
+        try:
+            small.save(buf, format=save_fmt)
+        except Exception:
+            continue
+        data = buf.getvalue()
+        best = (data, ext, "长边 %d → %d" % (cur0, long_edge))
+        if len(data) <= SOFT_LIMIT:
+            return best
+
+    return best if best else (raw, ext, "")
+
+
+def to_png(raw):
+    """转成 PNG。给"原格式被接口拒了"兜底用。转不了返回 None。"""
+    if not HAVE_PIL:
+        return None
+    try:
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+    except Exception:
+        return None
+    try:
+        if im.mode in ("P", "LA"):
+            im = im.convert("RGBA")
+        elif im.mode not in ("RGB", "RGBA", "L"):
+            im = im.convert("RGBA")
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+async def do_send_image(image):
+    openid = get_openid()
+    if not openid:
+        return {
+            "ok": False,
+            "error": "no_openid",
+            "message": "还没拿到你的 openid。请先在 QQ 里给机器人发任意一句话，程序会自动记住。",
+        }
+    if not RT["ready"]:
+        return {
+            "ok": False,
+            "error": "bot_offline",
+            "message": "机器人未在线（可能凭证不对或网络不通），无法发送。",
+        }
+    if STATE.get("proactive_rejected"):
+        return {
+            "ok": False,
+            "error": "proactive_rejected",
+            "message": "你在 QQ 客户端关闭了本机器人的主动消息接收。去机器人资料卡里打开即可。",
+        }
+
+    _mime, raw = decode_data_url(image.get("data_url"))
+    if raw is None:
+        return {"ok": False, "error": "bad_image",
+                "message": "图片数据解不开，请重新复制一次图片再试。"}
+    if not raw:
+        return {"ok": False, "error": "empty_image", "message": "图片是空的。"}
+    if len(raw) > HARD_LIMIT:
+        return {"ok": False, "error": "too_large",
+                "message": "图片有 %s，超过接口能接受的上限，发不了。" % human_size(len(raw))}
+
+    original_bytes = len(raw)
+    data, ext, shrink_note = normalize_image(raw)
+    name_hint = str(image.get("name") or "")
+
+    notes = []
+    if shrink_note:
+        notes.append(
+            "原图 %s 超过 20MB（会被 QQ 降级成「文件」卡片），"
+            "已缩尺寸发出（%s）。" % (human_size(original_bytes), shrink_note)
+        )
+
+    async def upload(payload_bytes, fext):
+        b64 = base64.b64encode(payload_bytes).decode("ascii")
+        return await api_post(
+            "https://api.sgroup.qq.com/v2/users/%s/files" % openid,
+            {
+                "file_type": 1,
+                "file_data": b64,
+                "file_name": sanitize_name(name_hint, fext),
+                "srv_send_msg": False,
+            },
+        )
+
+    try:
+        st, res = await upload(data, ext)
+    except Exception as e:
+        err = "%s: %s" % (type(e).__name__, e)
+        _log.error("图片上传异常: %s", err)
+        return {"ok": False, "error": "api_exception", "message": err}
+
+    file_info = res.get("file_info") if isinstance(res, dict) else None
+
+    # 官方文档对图片格式的说法自相矛盾：一处写「只支持 png/jpg」，另一处
+    # 写「支持 jpg/png/gif/webp/bmp」。所以先按原格式试，被拒就转 PNG 再来
+    # 一次。转换只在真失败时发生 —— 动图 GIF 因此不会白掉帧。
+    if not file_info and ext != "png":
+        old_ext = ext
+        conv = to_png(data)
+        if conv:
+            _log.info("原格式(%s)被拒，转成 PNG 重试一次", old_ext)
+            try:
+                st2, res2 = await upload(conv, "png")
+            except Exception as e:
+                st2, res2 = -1, {"message": str(e)}
+            if isinstance(res2, dict) and res2.get("file_info"):
+                st, res, file_info = st2, res2, res2["file_info"]
+                ext, data = "png", conv
+                notes.append(
+                    "原格式（%s）QQ 不收，已转成 PNG 发出%s。"
+                    % (old_ext, "（动图会变成静态图）" if old_ext == "gif" else "")
+                )
+        else:
+            _log.warning("原格式(%s)被拒，但没有 Pillow 转不了 PNG", old_ext)
+
+    if not file_info:
+        if isinstance(res, dict):
+            code = res.get("code")
+            m = res.get("message") or res.get("_raw") or ""
+            msg = "图片上传失败（HTTP %s，code=%s）：%s" % (st, code, str(m)[:200])
+        else:
+            msg = "图片上传失败：%s" % (str(res)[:200],)
+        _log.error(msg)
+        return {"ok": False, "error": "upload_failed", "message": msg}
+
+    try:
+        st3, res3 = await api_post(
+            "https://api.sgroup.qq.com/v2/users/%s/messages" % openid,
+            {"msg_type": 7, "media": {"file_info": file_info}, "content": ""},
+        )
+    except Exception as e:
+        err = "%s: %s" % (type(e).__name__, e)
+        _log.error("图片发送异常: %s", err)
+        return {"ok": False, "error": "api_exception", "message": err}
+
+    msg_id = res3.get("id") if isinstance(res3, dict) else None
+    if not msg_id:
+        return {
+            "ok": False,
+            "error": "no_msg_id",
+            "message": "图片上传成功，但发送没返回消息 id，无法确认是否真的发出去了。"
+                       "原始返回：%s" % (str(res3)[:200],),
+        }
+
+    out = {
+        "ok": True,
+        "kind": "image",
+        "msg_id": str(msg_id),
+        "bytes": len(data),
+        "original_bytes": original_bytes,
+        "format": ext,
+        "shrunk": bool(shrink_note) or len(data) != original_bytes,
+    }
+    if notes:
+        out["warning"] = "image_adjusted"
+        out["warning_message"] = "".join(notes)
+    _log.info(
+        "图片发送成功 msg_id=%s (%s %s%s)",
+        msg_id, ext, human_size(len(data)), "，已调整" if notes else "",
+    )
+    return out
+
+
 # ---------------------------------------------------------------- HTTP 服务
 
 @web.middleware
@@ -279,6 +649,8 @@ async def h_health(request):
             "send_fail": STATE.get("send_fail", 0),
             "last_error": STATE.get("last_error", ""),
             "uptime_sec": int(time.time() - RT["started_at"]),
+            "image_support": True,
+            "pillow": HAVE_PIL,
         }
     )
 
@@ -291,14 +663,20 @@ async def h_send(request):
             {"ok": False, "error": "bad_json", "message": "请求体不是合法 JSON。"}
         )
 
+    image = data.get("image")
     content = (data.get("content") or "").strip()
-    if not content:
+
+    t0 = time.time()
+    if isinstance(image, dict) and image.get("data_url"):
+        r = await do_send_image(image)
+        r.setdefault("kind", "image")
+    elif content:
+        r = await do_send(content)
+        r.setdefault("kind", "text")
+    else:
         return web.json_response(
             {"ok": False, "error": "empty_content", "message": "内容为空，没东西可发。"}
         )
-
-    t0 = time.time()
-    r = await do_send(content)
     r["elapsed_ms"] = int((time.time() - t0) * 1000)
 
     if r.get("ok"):
@@ -339,7 +717,8 @@ async def main():
     port = int(CFG.get("port") or 18761)
 
     # 1) 先起本地 HTTP 服务
-    app = web.Application(middlewares=[cors_mw])
+    #    client_max_size 必须放开，理由见 MAX_BODY_BYTES 那里。
+    app = web.Application(middlewares=[cors_mw], client_max_size=MAX_BODY_BYTES)
     app.add_routes(
         [
             web.get("/health", h_health),

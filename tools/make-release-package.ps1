@@ -155,6 +155,7 @@ foreach ($z in @($zip1, $zip2)) {
   # 完整包里扩展是它下面的 extension/ 子目录。这里最容易写错，
   # 曾经漏掉顶层那层导致 9 个文件全部误报缺失。
   $need = @("manifest.json", "background.js", "content.js", "popup.html", "popup.js",
+            "imageutil.js",
             "icons\icon16.png", "icons\icon32.png", "icons\icon48.png", "icons\icon128.png")
   $topName = [System.IO.Path]::GetFileNameWithoutExtension($z)   # = zip 内顶层文件夹名
   $isKit = $topName -notlike "*extension*"
@@ -165,7 +166,7 @@ foreach ($z in @($zip1, $zip2)) {
     Say ("  [FAIL] 扩展缺少文件：" + ($miss -join ", "))
     $fail = $true
   } else {
-    Say "  [OK]   扩展 9 个必需文件齐全（含 4 个尺寸图标）"
+    Say ("  [OK]   扩展 " + $need.Count + " 个必需文件齐全（含 4 个尺寸图标）")
   }
 }
 

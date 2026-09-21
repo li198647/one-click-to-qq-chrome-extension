@@ -14,7 +14,13 @@
    弹窗正是唯一持有焦点的那个 document —— 所以由它读最合适。
    （之前放在隐藏的 offscreen 文档里读，必然失败。）
    弹窗读到的结果随消息传给后台，后台再和「选中文字 / 页面信息」
-   一起走同一条取值链。 */
+   一起走同一条取值链。
+
+   ⚠️ 1.0.1 起剪贴板里可能是一张图片：
+   读文字失败（一个字都没有）时，顺手把图片也取出来一起交给后台。
+   刻意**只在没有文字时**才去取图 —— 剪贴板里同时有图和文字时（比如
+   从网页复制"图 + 说明"），仍然按老规矩发文字，不破坏已在用的行为。
+   图片的候选行会带一个小徽标，发送框里则画一张真缩略图。 */
 
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('statusText');
@@ -26,6 +32,9 @@ const clearLink = document.getElementById('clearLink');
 const sendBox = document.getElementById('sendBox');
 const sbHead = document.getElementById('sbHead');
 const sbText = document.getElementById('sbText');
+const sbThumbWrap = document.getElementById('sbThumbWrap');
+const sbThumb = document.getElementById('sbThumb');
+const sbThumbMeta = document.getElementById('sbThumbMeta');
 const candsHead = document.getElementById('candsHead');
 const candsTitleText = document.getElementById('candsTitleText');
 const candsList = document.getElementById('candsList');
@@ -88,44 +97,132 @@ function renderDiag(stats) {
     + '　·　' + ver;
 }
 
+/* ---------------------------------------------- 图片那一行的说明文字 */
+
+/* 「图片 · 1000×750 · 245 KB」。宽高读不出来时只显示体积 ——
+   尺寸那格宁可留空，也不能编一个数出来。
+
+   体积这里自己算，刻意不用 imageutil.js 里的同名函数：渲染这一层不该
+   依赖另一个文件在不在，万一漏打包，宁可少一个数字也不要整个弹窗白屏。 */
+function humanSize(n) {
+  const b = Number(n) || 0;
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return Math.round(b / 1024) + ' KB';
+  return (Math.round(b / 1024 / 102.4) / 10) + ' MB';
+}
+
+function imgMetaLine(im) {
+  const x = im || {};
+  const parts = ['图片'];
+  if (x.width && x.height) parts.push(x.width + '×' + x.height);
+  parts.push(humanSize(x.bytes));
+  return parts.join(' · ');
+}
+
+/* 候选行前面那个小徽标（内联 SVG，不引外部图片文件）。
+   用 currentColor，颜色跟着 CSS 走。 */
+const SVGNS = 'http://www.w3.org/2000/svg';
+
+function imgBadge() {
+  const s = document.createElementNS(SVGNS, 'svg');
+  s.setAttribute('viewBox', '0 0 16 16');
+  s.setAttribute('width', '14');
+  s.setAttribute('height', '14');
+  s.setAttribute('class', 'candIcon');
+
+  const r = document.createElementNS(SVGNS, 'rect');
+  r.setAttribute('x', '1.6'); r.setAttribute('y', '2.6');
+  r.setAttribute('width', '12.8'); r.setAttribute('height', '10.8');
+  r.setAttribute('rx', '1.8');
+  r.setAttribute('fill', 'none');
+  r.setAttribute('stroke', 'currentColor');
+  r.setAttribute('stroke-width', '1.3');
+
+  const p = document.createElementNS(SVGNS, 'path');
+  p.setAttribute('d', 'M3.2 11.2 L6.2 7.6 L8.3 9.9 L10.1 8.6 L12.8 11.2 Z');
+  p.setAttribute('fill', 'currentColor');
+
+  const c = document.createElementNS(SVGNS, 'circle');
+  c.setAttribute('cx', '5.7'); c.setAttribute('cy', '5.7');
+  c.setAttribute('r', '1.1');
+  c.setAttribute('fill', 'currentColor');
+
+  s.appendChild(r);
+  s.appendChild(p);
+  s.appendChild(c);
+  return s;
+}
+
+/* 把缩略图收起来，并**断开对 dataURL 的引用**。
+   一张 4MB 的图转成 dataURL 是 5MB 以上的字符串，挂在 <img> 上不会
+   自己释放；显式清掉 src 才能让它被回收。 */
+function clearThumb() {
+  sbThumbWrap.style.display = 'none';
+  sbThumb.removeAttribute('src');
+  sbThumbMeta.textContent = '';
+}
+
 /* ---------------------------------------------- 渲染
 
    两块，视觉上刻意分开：
-     ① 「将要发送」—— 文字本体单独套一个实线矩形。这是"已经定下的"。
+     ① 「将要发送」—— 已经定下的那一份（文字框 / 缩略图）。
      ② 「候选」—— 一个纯列表，用来改选。这是"可以挑的"。
    选中那条在两处同时高亮，所以点列表里的第 3 行，上面框里的字会跟着换。 */
 
 function renderAll() {
   const c = cands[sel];
 
-  /* ① 将要发送 —— 只有标题和文字本体两块。
+  /* ① 将要发送。两种形态互斥，不会同时出现：
+     文字 = 线框框住的一段字；图片 = 真缩略图 + 尺寸体积。
      原来那行「共 N 字」已去掉（木木要求：不要这个提示）；
      内容超过 20 字时 preview 末尾本来就带 "…"，看得出被截断。 */
   if (c) {
     sbHead.textContent = '将要发送 · 来自' + c.source;
-    sbText.style.display = 'block';
-    sbText.textContent = c.preview;
-    /* 悬停看全文 —— 框里只显示前 20 字，光看开头认不出是哪一条。 */
-    sbText.title = c.text;
+
+    if (c.kind === 'image' && c.image) {
+      sbText.style.display = 'none';
+      sbText.textContent = '';
+      sbText.removeAttribute('title');
+      sbThumbWrap.style.display = 'block';
+      sbThumb.src = c.image.dataUrl;
+      sbThumbMeta.textContent = imgMetaLine(c.image) +
+        (c.image.name ? '　·　' + c.image.name : '');
+    } else {
+      clearThumb();
+      sbText.style.display = 'block';
+      sbText.textContent = c.preview;
+      /* 悬停看全文 —— 框里只显示前 20 字，光看开头认不出是哪一条。 */
+      sbText.title = c.text;
+    }
   }
 
-  /* ② 候选列表 */
+  /* ② 候选列表。图片项前面加一个小徽标，把"没有文字可预览"那一格换成
+     「图片 · 1000×750 · 245 KB」—— 既看得出是图，又看得出是哪张。 */
   candsList.textContent = '';
   cands.forEach(function (it, i) {
     const el = document.createElement('div');
     el.className = 'cand' + (i === sel ? ' sel' : '');
     el.dataset.i = String(i);
-    el.title = it.text;
 
     const no = document.createElement('span');
     no.className = 'candNo';
     no.textContent = String(i + 1);
 
+    el.appendChild(no);
+
     const tx = document.createElement('span');
     tx.className = 'candTxt';
-    tx.textContent = it.preview;
 
-    el.appendChild(no);
+    if (it.kind === 'image' && it.image) {
+      const line = imgMetaLine(it.image);
+      el.title = line + (it.image.name ? '　' + it.image.name : '');
+      el.appendChild(imgBadge());
+      tx.textContent = line;
+    } else {
+      el.title = it.text;
+      tx.textContent = it.preview;
+    }
+
     el.appendChild(tx);
     candsList.appendChild(el);
   });
@@ -169,6 +266,7 @@ async function readClipboardHere() {
     clipText: '',
     clipError: '',
     clipKinds: [],
+    clipImage: null,
     where: '弹窗'
   };
 
@@ -198,8 +296,11 @@ async function readClipboardHere() {
 
   if (!out.clipOk) return out;
 
-  /* 只在"读到了、但一个字都没有"时才多花一次调用，分辨剪贴板里到底
-     装的是图片、文件、还是真的空。 */
+  /* 只在"读到了、但一个字都没有"时才多花调用，做两件事：
+     ① 分辨剪贴板里到底装的是图片、文件、还是真的空
+     ② v1.0.1：如果是图片，把它取出来 —— 这就是"一键传图"的入口。
+     刻意等文字优先：剪贴板里同时有图和文字时仍然发文字，
+     不破坏已经在用的行为。 */
   if (!out.clipText) {
     try {
       if (navigator.clipboard.read) {
@@ -211,6 +312,13 @@ async function readClipboardHere() {
           }
         }
         out.clipKinds = kinds;
+        /* 取图会解码一次图片（拿宽高），有点耗时 —— 只在真的没有文字
+           时才做，正常发文字那一路一点开销都没增加。
+           qqImg 来自 imageutil.js（popup.html 里排在 popup.js 之前）。
+           万一它不在，就当"剪贴板里没有图"，文字那套照旧能用。 */
+        if (typeof qqImg !== 'undefined' && qqImg && qqImg.pickImageFromClipItems) {
+          out.clipImage = await qqImg.pickImageFromClipItems(items);
+        }
       }
     } catch (e) { /* 分辨不出来就退回到"剪贴板里没有文字"这句 */ }
   }
@@ -230,6 +338,7 @@ async function refreshPreview() {
   sbHead.textContent = '正在读取剪贴板…';
   sbText.textContent = '';
   sbText.title = '';
+  clearThumb();
   candsHead.style.display = 'none';
   candsList.textContent = '';
   candsNote.textContent = '';
@@ -258,6 +367,7 @@ async function refreshPreview() {
       (restricted ? '\n这个页面发不了，按钮已停用。' : '\n按钮已停用。');
     /* 没内容可发时把那个线框收起来 —— 留一个空框只会让人以为漏了东西。 */
     sbText.style.display = 'none';
+    clearThumb();
     sendBtn.disabled = true;
     renderDiag((r && r.stats) || {});
     return;
@@ -271,6 +381,7 @@ async function refreshPreview() {
     sendBox.className = 'sendbox err';
     sbHead.textContent = '拿不到要发送的内容\n候选列表是空的。按钮已停用。';
     sbText.style.display = 'none';
+    clearThumb();
     sendBtn.disabled = true;
     return;
   }
@@ -361,8 +472,9 @@ clearLink.addEventListener('click', async function () {
 /* ---------------------------------------------- 发送 */
 
 sendBtn.addEventListener('click', async () => {
-  /* 记下"你此刻看到并选中的那一条原文"。发送时按原文精确匹配，
-     匹配不到就直接发它 —— 保证看到什么就发什么。 */
+  /* 记下"你此刻看到并选中的那一条"的钥匙（'t:文字' 或 'i:0'）。
+     发送时按钥匙精确匹配，匹配不到就直接发这份原文 ——
+     保证看到什么就发什么。 */
   const pick = cands[sel];
 
   sendBtn.disabled = true;
@@ -376,7 +488,7 @@ sendBtn.addEventListener('click', async () => {
     res = await chrome.runtime.sendMessage({
       type: 'do-send',
       clipboard: clip,
-      pickText: pick ? pick.text : ''
+      pickKey: pick ? pick.key : ''
     });
   } catch (e) {
     res = { ok: false, reason: briefError(e) };
