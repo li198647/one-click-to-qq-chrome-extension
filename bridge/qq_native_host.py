@@ -66,7 +66,7 @@ CONFIG_PATH = os.path.join(BASE, "config.json")
 LOG_DIR = os.path.join(BASE, "log")
 HOST_LOG = os.path.join(LOG_DIR, "native_host.log")
 
-VERSION = "1.0.6"
+VERSION = "1.1.0"
 DEFAULT_PORT = 18761
 MAX_MSG = 1024 * 1024
 

@@ -527,6 +527,19 @@ check('v1.0.6: 桥侧起托盘失败不拦启动（只记一条 warning）',
 check('v1.0.6: 桥退出时会摘图标、还窗口样式（finally 里 cleanup）',
   /TRAY\.cleanup\(\)/.test(bridgePy));
 
+/* 托盘测试本身也得能在"真有个桥在跑"的机器上跑 —— 所以它必须按 pid 认领窗口。
+   ⚠️ 而且 pid 不能用 Popen().pid：本机（带沙箱外壳）那拿到的是**外层包装进程**，
+   真身是它的孙进程（实测 wrapper=5820 / 真身=20260），托盘窗口属于真身。
+   这两条都踩过：一开始不按 pid，测试会去动真实运行那个桥的窗口。 */
+let trayTest = '';
+try { trayTest = fs.readFileSync(path.join(root, 'tools', 'test_tray.py'), 'utf8'); } catch (e) { /* 忽略 */ }
+check('v1.1.0: 托盘测试按 pid 认领窗口（不按类名前缀一把抓）',
+  /def tray_win\(pid=None\)/.test(trayTest) && /GetWindowThreadProcessId/.test(trayTest));
+check('v1.1.0: 托盘测试用子进程自报的 pid（Popen().pid 在本机是外层包装）',
+  /["']pid["']\s*:\s*os\.getpid\(\)/.test(trayTest) &&
+  /info\.get\("pid"\)/.test(trayTest) &&
+  !/tray_win\(proc\.pid\)/.test(trayTest));
+
 check('v1.0.4: 宿主按官方协议读 4 字节小端长度', /struct\.unpack\("<I", head\)/.test(host));
 check('v1.0.4: 宿主回复也带 4 字节长度前缀', /struct\.pack\("<I", len\(payload\)\)/.test(host));
 check('v1.0.4: 宿主把 stdout 切二进制（避免 CRLF 转换）',

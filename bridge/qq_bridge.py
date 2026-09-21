@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-QQ 转发助手 · 本地桥程序  v1.0.6
+QQ 转发助手 · 本地桥程序  v1.1.0
 
 职责：
   1. 用官方 SDK 连上 QQ 机器人（WebSocket，不需要公网 IP、不需要备案域名）
@@ -44,7 +44,7 @@ LOG_DIR = os.path.join(BASE, "log")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_PATH = os.path.join(LOG_DIR, "bridge_%s.log" % datetime.now().strftime("%Y%m%d"))
 
-VERSION = "1.0.6"
+VERSION = "1.1.0"
 
 _log = logging.getLogger("bridge")
 
