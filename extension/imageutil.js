@@ -157,10 +157,13 @@
      要命的是这条报错**由浏览器自己打印**，不是 Promise 的 rejection ——
      try/catch 接不住它。所以唯一干净的解法是"先问策略、再决定叫不叫"。
 
-     document.featurePolicy 是旧名，Chrome 后来改叫 document.permissionsPolicy，
-     两个都探。问不出来（老 Chrome、service worker 里没有 document）就
-     返回 true 按允许处理 —— 外层本来还有 try/catch 兜底，宁可多试一次，
-     也别把一个本来能用的页面误判成不能用。
+     document.featurePolicy 是旧名，新名是 document.permissionsPolicy，两个都探。
+     ⚠️ 但别以为新名已经可用：实测 Chromium 138（木木的 Thorium）和 151 上
+     document.permissionsPolicy **都还是 undefined**，真正存在的只有
+     featurePolicy —— 所以两个都得留着，顺序不能反着删。
+     问不出来（老 Chrome、service worker 里没有 document）就返回 true 按
+     允许处理 —— 外层本来还有 try/catch 兜底，宁可多试一次，也别把一个
+     本来能用的页面误判成不能用。
 
      为什么放在这个文件里：它是唯一被 service worker / 弹窗 / 网页三处
      都加载的文件。content.js 和 background.js 需要同一份判断，各写一遍

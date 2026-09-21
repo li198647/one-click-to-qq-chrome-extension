@@ -20,10 +20,16 @@
    读文字失败（一个字都没有）时，顺手把图片也取出来一起交给后台。
    刻意**只在没有文字时**才去取图 —— 剪贴板里同时有图和文字时（比如
    从网页复制"图 + 说明"），仍然按老规矩发文字，不破坏已在用的行为。
-   图片的候选行会带一个小徽标，发送框里则画一张真缩略图。 */
+   图片的候选行会带一个小徽标，发送框里则画一张真缩略图。
+
+   ⚠️ 1.0.4 起状态行会多出一个「启动本地桥」按钮：
+   重启电脑后桥不会自己跑起来，从前得去磁盘里翻 start_bridge.bat。
+   现在只在"连不上本地桥"时出现，点一下由宿主程序把桥拉起来。
+   实现在下面 waitBridgeUp / waitBotReady 那一段。 */
 
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('statusText');
+const bridgeBtn = document.getElementById('bridgeBtn');
 const detail = document.getElementById('detail');
 const sendBtn = document.getElementById('sendBtn');
 const lastLine = document.getElementById('lastLine');
@@ -50,6 +56,70 @@ let lastPreviewOk = false;
 function setStatus(kind, text) {
   dot.className = 'dot' + (kind ? ' ' + kind : '');
   statusText.textContent = text;
+}
+
+/* ---------------------------------------------- 「启动本地桥」按钮（v1.0.4）
+
+   只有"连不上本地桥"这一种状态下它才有意义 —— 桥在跑但机器人没连上、
+   缺 openid、正在检查，这三种情况下点了都没用，所以平时整条不出现。
+
+   ⚠️ 启动过程**不许静默**：点下去如果失败，原因原样摊在下面那行红字里；
+   成功也要等桥真的应答了（轮询 /health）才敢说"起来了"。 */
+
+const BRIDGE_POLL_MS = 1500;    // 两次探问之间的间隔
+const BRIDGE_UP_MS = 30000;     // 第一段：等桥的 HTTP 服务应答
+const BRIDGE_BOT_MS = 20000;    // 第二段：服务起来了，再等机器人登录
+
+/* launching 期间 refreshHealth() 不许动这个按钮 —— 否则每轮健康检查都会
+   把"正在启动…"刷回"启动本地桥"，看起来像自己抖。 */
+let launching = false;
+
+function showBridgeBtn(on) {
+  bridgeBtn.style.display = on ? '' : 'none';
+}
+
+function sleep(ms) {
+  return new Promise(function (r) { setTimeout(r, ms); });
+}
+
+function elapsedSec(t0) {
+  return Math.round((Date.now() - t0) / 1000);
+}
+
+async function pollHealthOnce() {
+  try {
+    return await chrome.runtime.sendMessage({ type: 'get-health' });
+  } catch (e) {
+    return null;
+  }
+}
+
+/* 第一段：等桥的 HTTP 服务应答（最长 BRIDGE_UP_MS）。返回是否等到了。
+
+   ⚠️ 秒数刻意写在**按钮**上，不写在状态行里 —— 状态行只有 272px，塞了
+   按钮之后余量只剩不到 50px（实测）。写成「正在启动本地桥…已等 12 秒」
+   就只有 10px 余量了，字体一换就会掉成两行。 */
+async function waitBridgeUp(t0) {
+  while (Date.now() - t0 < BRIDGE_UP_MS) {
+    await sleep(BRIDGE_POLL_MS);
+    const h = await pollHealthOnce();
+    if (h && h.ok) return true;
+    bridgeBtn.textContent = '启动中…' + elapsedSec(t0) + 's';
+  }
+  return false;
+}
+
+/* 第二段：服务已经起来了，机器人登录还要几秒。这一段是锦上添花 ——
+   超时不报错，真实状态交给 refreshHealth() 照实显示。 */
+async function waitBotReady() {
+  const t0 = Date.now();
+  setStatus('', '正在连接机器人…');
+  while (Date.now() - t0 < BRIDGE_BOT_MS) {
+    const h = await pollHealthOnce();
+    if (h && h.ok && h.data && h.data.bot_ready && h.data.has_openid) return true;
+    await sleep(BRIDGE_POLL_MS);
+  }
+  return false;
 }
 
 function showDetail(text, isError) {
@@ -431,12 +501,18 @@ async function refreshHealth() {
 
   if (!r || !r.ok) {
     setStatus('bad', '连不上本地桥');
+    /* 启动中就不要把这个按钮抢回来 —— 让"正在启动…"留在那儿。 */
+    if (!launching) showBridgeBtn(true);
     showDetail(
-      '桥程序没在运行。双击 bridge\\start_bridge.bat 启动它，然后重开这个弹窗。',
+      '桥程序没在运行。点右边的「启动本地桥」把它拉起来；' +
+      '不行就双击 bridge\\start_bridge.bat。',
       true
     );
     return;
   }
+
+  /* 走到这里说明桥的 HTTP 服务活着 —— 那个按钮已经没有用了。 */
+  showBridgeBtn(false);
 
   const d = r.data || {};
   if (!d.bot_ready) {
@@ -456,6 +532,61 @@ async function refreshHealth() {
   hideDetail();
   showDetail('机器人已上线　·　累计 ' + sent, false);
 }
+
+/* 点「启动本地桥」：喊宿主去拉桥，然后自己盯着它起没起来。
+
+   注意这里**没有**超时兜底就宣布成功的分支 —— 只有轮询到桥真的应答了
+   才说"好了"；等不到就把话说明白。宁可告诉你"没起来"，也不假装成功。 */
+bridgeBtn.addEventListener('click', async function () {
+  if (launching) return;
+  launching = true;
+  bridgeBtn.disabled = true;
+  bridgeBtn.textContent = '正在启动…';
+  setStatus('', '正在启动本地桥…');
+  hideDetail();
+
+  let r = null;
+  try {
+    r = await chrome.runtime.sendMessage({ type: 'launch-bridge' });
+  } catch (e) {
+    r = { ok: false, reason: briefError(e), detail: '' };
+  }
+
+  if (!r || !r.ok) {
+    launching = false;
+    bridgeBtn.disabled = false;
+    bridgeBtn.textContent = '启动本地桥';
+    setStatus('bad', '连不上本地桥');
+    showDetail(
+      '没能启动本地桥：' + ((r && r.reason) || '未知原因') +
+      ((r && r.detail) ? '\n' + r.detail : ''),
+      true
+    );
+    return;
+  }
+
+  /* 宿主那边可能回报"已经在跑了"（例如你重启前它就活着）。
+     那种情况不用等，直接看状态就行。 */
+  const already = !!(r.data && r.data.action === 'already-running');
+
+  const t0 = Date.now();
+  const up = already ? true : await waitBridgeUp(t0);
+  if (up) await waitBotReady();
+
+  launching = false;
+  bridgeBtn.disabled = false;
+  bridgeBtn.textContent = '启动本地桥';
+  await refreshHealth();
+  await refreshLast();
+
+  if (!up) {
+    showDetail(
+      '等了 ' + Math.round(BRIDGE_UP_MS / 1000) + ' 秒，桥还是没应答。\n' +
+      '可以双击 bridge\\start_bridge.bat，看那个黑窗口里报了什么。',
+      true
+    );
+  }
+});
 
 /* ---------------------------------------------- 上次发送（一行） */
 

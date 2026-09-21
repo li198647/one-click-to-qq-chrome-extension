@@ -79,13 +79,18 @@ Say ("  -> " + $zip1 + "  " + (Get-Item $zip1).Length + " bytes")
 # ---------------------------------------------------------------- 完整包
 Say ""
 Say "=== 组装完整包（扩展 + 桥）==="
-$kitFiles = @("qq_bridge.py", "send_test.py", "probe_url.py", "start_bridge.bat", "config.example.json")
+# ⚠️ 这三个（1.0.4 新增）不是可选的：少了它们，装完整包的人点弹窗上那个
+#    「启动本地桥」按钮会永远失败 —— 宿主入口、宿主逻辑、兜底登记脚本，
+#    缺一个那条链就断。所以它们必须留在这张白名单里。
+$kitFiles = @("qq_bridge.py", "send_test.py", "probe_url.py", "start_bridge.bat",
+              "config.example.json",
+              "qq_host.bat", "qq_native_host.py", "重新登记.bat")
 $d2 = Join-Path $stage $kitPkgName
 New-Item -ItemType Directory -Path $d2 -Force | Out-Null
 Copy-Item -Path $extDir -Destination (Join-Path $d2 "extension") -Recurse -Force
 New-Item -ItemType Directory -Path (Join-Path $d2 "bridge") -Force | Out-Null
 foreach ($f in $kitFiles) {
-  # 白名单式拷贝：只拷这 5 个文件，bridge 目录里的日志/凭据一概不碰
+  # 白名单式拷贝：只拷这几个文件，bridge 目录里的日志/凭据一概不碰
   Copy-Item -LiteralPath (Join-Path $brDir $f) -Destination (Join-Path $d2 "bridge") -Force
 }
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $d2 -Force

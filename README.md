@@ -50,6 +50,9 @@
 │   ├── qq_bridge.py        主程序：aiohttp 本地服务 + botpy WebSocket
 │   ├── config.example.json 配置模板（复制成 config.json 再填）
 │   ├── start_bridge.bat    双击启动
+│   ├── qq_native_host.py   （1.0.4）扩展那个「启动本地桥」按钮的宿主程序
+│   ├── qq_host.bat         （1.0.4）宿主入口 —— 浏览器按注册表找到的就是它
+│   ├── 重新登记.bat         （1.0.4）兜底：桥被搬走 / 登记被清掉时双击它
 │   ├── send_test.py        命令行工具：查状态 / 发消息 / 看日志
 │   └── probe_url.py        链接探针：验证 QQ 会不会过滤带链接的消息
 │
@@ -60,11 +63,14 @@
     ├── net_check.py        检测 QQ API 域名连通性（防代理 fake-IP 坑）
     ├── make_icons.py       生成扩展图标（可 --preview 出多方案对比图）
     ├── make-preview.js     生成打桩版弹窗预览页，改完 UI 不用真装扩展就能看
+    ├── measure-popup-row.py 量尺：状态行塞得下多少字（改版式前后各跑一次）
     ├── make-release-package.ps1  打 Release 附件：出「扩展包」与「完整包」两个 zip
     ├── test_image_101.py   图片通路真机验证（直接 import 桥里的函数调，不打扰正在跑的桥）
+    ├── test_native_host.py 宿主全链路自检（协议 / 中文路径穿 cmd / 窗口最小化 / 宿主死后桥还活着）
+    ├── probe-native-roots.py 探针：这台浏览器到底在哪几个注册表位置找宿主
     ├── test_quota_guard.js 配额防线实测：切出 background.js 的存储代码段，配一个会按上限抛错的假 storage 跑
     ├── test_clip_policy.js 剪贴板权限守卫实测：切出真源码，配会记账的假 document / 剪贴板跑
-    └── verify-extension.js 改完 extension/ 就跑它：语法 + 清单 + 101 项断言
+    └── verify-extension.js 改完 extension/ 就跑它：语法 + 清单 + 135 项断言
 ```
 
 `dist/`（发版产出的 zip）与 `packaging/`（安装说明、Release 文稿）说明见下方「下载安装」。
@@ -142,6 +148,14 @@ python qq_bridge.py
 
 **这个窗口要一直开着。** 桥关了就发不出去。
 
+> 💡 `1.0.4` 起，**重启电脑后不用再去磁盘里翻这个文件了**：打开扩展弹窗，连不上桥时状态行右边会出现一个「**启动本地桥**」按钮，点一下就把它拉起来（窗口最小化到任务栏）。
+>
+> 首次启动桥时它会**自己把自己登记好**（写一份宿主清单 + 往注册表登记三处），所以你一次都不用选文件。万一哪天 `bridge` 文件夹被搬了位置、或者登记被清理软件删了，双击 `bridge\重新登记.bat` 补一次即可。
+>
+> ⚠️ 装/更新到 `1.0.4` 后，`chrome://extensions` 点「重新加载」时浏览器会提示**新增了一项权限**（`nativeMessaging`，就是"允许扩展跟本地程序对话"），点确认即可 —— 不确认的话扩展会处于停用状态。
+>
+> 不想留着登记项时，卸载方式是删掉注册表里这两个位置（`HKCU\Software\Thorium\NativeMessagingHosts\com.mumu.qq_bridge` 和 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.mumu.qq_bridge`，`软件\Chromium\...` 下可能也有一个），再删掉 `bridge\com.mumu.qq_bridge.json`。都是当前用户下的项，不需要管理员权限。
+
 ### 第 3 步 · 装 Chrome 扩展
 
 1. 地址栏输入 `chrome://extensions`
@@ -201,6 +215,42 @@ python qq_bridge.py
 - 列表里只显示**开头**，发送的是**完整内容**，一个字都不会截
 - 剪贴板里是图片时，「将要发送」那一块会换成**这张图的缩略图**（见下面的「发图片」）
 - `chrome://` 开头的设置页、扩展商店、新标签页**读不到选中文字和标题**，但只要你先把内容复制进剪贴板，照样能发
+
+### 一键启动本地桥（`1.0.4` 起）
+
+重启电脑后桥不会自己跑起来。以前得去磁盘里翻 `bridge\start_bridge.bat`，日子久了必然忘记它放在哪 —— 所以现在连不上桥时，弹窗里会直接给你一个按钮：
+
+```
+一键发到 QQ                    [ 立即发送 ]
+● 连不上本地桥         [ 启动本地桥 ] ← 只在"连不上桥"这一种状态下出现
+```
+
+点一下会发生什么：
+
+| 阶段 | 屏幕上看到的 |
+|---|---|
+| 1 | 按钮变「正在启动…」并禁用，状态行写「正在启动本地桥…」 |
+| 2 | 每 1.5 秒问一次桥起来没有；**秒数显示在按钮上**（`启动中…7s`） |
+| 3 | 桥的本地服务应答了 → 状态行变「正在连接机器人…」，继续等机器人登录 |
+| 4 | 全好了 → 绿色「一切正常，可以发送」，按钮消失 |
+
+- **最多等 30 秒**（桥的本地服务）+ 20 秒（机器人登录）。等不到就把原因原样写在下面那行红字里，**不会假装成功**
+- 桥的控制台窗口**最小化到任务栏**、不抢焦点。要看它、要停它，从任务栏点开即可（停桥按 `Ctrl+C`）
+- **幂等**：桥已经在跑时点它不会起第二个（宿主会先探一下端口，直接回"已经在跑了"）
+- 那个按钮**不会一直挂在那儿**：桥在跑但机器人没连上、缺 openid、正在检查——这几种状态下它点了也没意义，所以平时整条是隐藏的
+- 按钮出现在状态行里，而状态行只有 272px 宽 —— 所以启动过程中的秒数写在了**按钮**上而不是状态行里（实测：写成「正在启动本地桥…已等 12 秒」只剩 10px 余量，字体一换就会掉成两行）。这条有工具守：`tools/measure-popup-row.py`
+
+**它是怎么做到"扩展能启动本地程序"的**（扩展其实没有这个能力，走的是 Chrome 唯一的合法通道）：
+
+```
+扩展（点按钮）
+  → chrome.runtime.sendNativeMessage('com.mumu.qq_bridge', {cmd:'start'})
+    → Chrome 按注册表 → 找到 bridge\qq_host.bat → 拉起它
+      → 它执行 qq_native_host.py
+        → 先探 18761 端口在不在，不在才拉起 start_bridge.bat
+```
+
+其中"宿主在哪"这份登记信息由**桥自己**在启动时写好，所以不需要你去选任何文件。相关细节与两个坑见下面「开发笔记」。
 
 ### 发图片（`1.0.1` 起）
 
@@ -316,7 +366,7 @@ Chrome **不提供任何「剪贴板变了」的通知接口** —— 扩展**�
 | `1.0.0` | 2026-09-20 | **正式版**。内容即 `0.1.6`（微调版式：发送按钮缩成 Windows 对话框「是/否」尺寸并搬到标题行最右端、「将要发送」标题字号降到 11px、去掉「共 N 字」那一行），**本地验证通过后正式定版** —— 从 `0.1.1` 起跑了 5 个迭代版把功能与版式都磨稳了，故结束 `0.x` 预发布阶段。同时**首次提供现成的下载包**：新增 `tools/make-release-package.ps1`，产出「扩展包」与「完整包」两个 zip 作为 Release 附件，包里附安装说明 |
 | `1.0.1` | 2026-09-21 | **一键传图片**。两个入口：① **剪贴板里的图片**（截图或网页右键「复制图片」后点图标 / 按 `Ctrl+B`）② **右键网页图片** →「发送此图片到 QQ」（新增 `contextMenus` 权限，由扩展后台自己下载并转 base64）。弹窗里**明确标出这次发的是图片**：候选行一个小徽标 + 「图片 · 1080×2400 · 2.4 MB」，发送框里换成**真缩略图**。新增 `extension/imageutil.js`（后台 / 弹窗 / 网页三处共用）；桥端新增图片上传与发送（**超 20MB 自动缩尺寸、原格式被拒则转 PNG 重试**，都用 Pillow 在桥这边做）。三处关键决策：**图片不进候选历史**（`storage.session` 只有 10MB，base64 膨胀 1/3，4 张 2MB 截图就会连文字历史一起搞挂）、**剪贴板同时有图和文字时仍发文字**（老行为不破）、**右键取不到图时明确报错**（绝不静默换内容发）。自检断言 43 项 → 72 项 |
 | `1.0.2` | 2026-09-21 | **修「再复制一次图片，弹窗里没有缩略图」**。现象：复制图片（有缩略图）→ 复制一段文字 → **再**复制图片，第三次缩略图不见了。根因不在图片这一侧：`resolveContent` 里「页面选中文字」排在「剪贴板图片」前面，而**选中文字是个"持续状态"** —— 复制完那段文字后高亮不会自己消失，于是它会一直把之后复制的图片挤掉。修法：判据从"谁存在"改成**"谁更新"** —— `content.js` 新增两个时刻（`selectionchange` 记选中文字变化的时刻；`copy` 事件里 `clipboardData.types` 含 `image/*` 时记"刚复制的是图"的时刻，并作废选中时刻），`probePage` 把它们带回后台，由 `resolveContent` 决定谁当"将要发送"。**图片不再被后者吃掉**：两条都进候选，点一下就能改选，并会写明"现在默认发哪一条"。图片的 `key` 也从按位置算（`i:0`）改成按「体积 + 宽高」算 —— 图片可能排在选中文字后面了，位置不再稳定。自检 72 项 → 83 项（新增 4 条**判定表**断言：直接把 `background.js` 里的判定式取出来跑真实组合，而不是另抄一遍）。**同一版补上两道 `storage.session` 配额防线** —— 这道门此前一行代码都没守：① **单条 > 512KB 不进历史**（4 条最多 2MB，只占配额 20%，留 80% 余量；超大内容照常能发，只是回头改选不到）② **写入失败逐级退让**（4 → 2 → 1 → 空）并把原因带回弹窗，不再被 `catch (e) { /* 忽略 */ }` 吞掉。自检 83 项 → **92 项全绿**，另加 `tools/test_quota_guard.js`（20 项：切真实的存储代码段 + 会按字节上限抛错的假 `chrome.storage.session`） |
-| `1.0.3` | 2026-09-21 | **修「扩展错误页刷 Permissions policy violation」**。现象：在 reverso.net 上打开扩展的「错误」页，能看到 `Permissions policy violation: The Clipboard API has been blocked because of a permissions policy applied to the current document.`，堆栈指向 `content.js` 里读剪贴板那行。根因：站点里的**跨域 iframe**（广告位、嵌入组件）默认被 Chrome 关掉了 `clipboard-read`，而 content.js 是 `all_frames: true`，在那些 frame 里也照样每 2 秒读一次。要命的是这条报错由**浏览器自己打印**、不是 Promise 的 rejection，`try/catch` 接不住 —— 只能"先问策略、再决定叫不叫"。修法：新增 `qqImg.clipReadAllowed()`（`document.permissionsPolicy \|\| document.featurePolicy` 的 `allowsFeature('clipboard-read')`，**问不出来一律放行**，宁可多试不可误伤），`content.js` 的 `canRead()` 与 `background.js` 注入页面的探针都先过这道岗；**弹窗刻意不设**（它是扩展自己的页面，策略由 manifest 决定，不受站点影响，设了只多一个误拦风险）。另加**自愈**：万一还撞上，`content.js` 认出策略类报错后在该 document 内永久闭嘴（匹配串刻意只认"策略"字样，免得把偶发的 `Document is not focused` 也永久关掉）。自检 92 项 → **101 项**，另加 `tools/test_clip_policy.js`（20 项） |
+| `1.0.4` | 2026-09-21 | **弹窗上多了「启动本地桥」按钮** —— 重启电脑后不必再去磁盘里翻 `start_bridge.bat`。走的是 Chrome 唯一的合法通道 **Native Messaging**（扩展根本没有"运行本地程序"的 API）：新增 `bridge\qq_host.bat`（宿主入口）+ `bridge\qq_native_host.py`（宿主逻辑，收发 4 字节长度前缀 + JSON 的官方协议、第一步就探端口保证**幂等**、用 `SW_SHOWMINNOACTIVE` 让控制台**最小化到任务栏**）+ `bridge\重新登记.bat`（兜底）。登记信息由**桥自己**在启动时写（`winreg` 直写 HKCU，不碰被本机安全层挡住的 `reg.exe`），所以你一次都不用选文件 —— 原需求里"用资源管理器选桥文件"这一步**被砍掉了**：浏览器拿不到真实路径（只给 `C:\fakepath\…`），而且"弹选择框"本身要靠宿主，恰恰在宿主坏掉时才需要重选。按钮**只在"连不上本地桥"时出现**（其余三种状态点了没意义）；点下去按钮变「正在启动…」，每 1.5 秒轮询一次，最多等 30 秒 + 机器人登录 20 秒，**等不到就把原因原样摊出来，不假装成功**。自检 101 项 → **135 项**，另加 `tools/test_native_host.py`（**52 项**：含"中文路径穿过 `cmd /d /s /c`"、"stdout 零多余字节"、"窗口确实最小化"、"**宿主被浏览器回收后桥还在跑**"）。⚠️ 装到这一版时浏览器会提示**新增 `nativeMessaging` 权限**，需要确认一次 |
 
 > **版本号怎么走到这里的**：第一版 manifest 里随手填的 `1.0.0` 从未发布（无 tag、无提交记录），此后老老实实按 `0.1.1 → 0.1.2 → … → 0.1.6` 往上迭代。`0.1.2`／`0.1.3` 因本地验证未通过而**未单独发版**，改动分别并入 `0.1.4`／`0.1.5`。`0.1.6` 经本地验证通过后，作为**功能与版式均已稳定**的首个正式版发布为 **`1.0.0`**。
 
@@ -335,7 +385,9 @@ Chrome **不提供任何「剪贴板变了」的通知接口** —— 扩展**�
 | **发图比发文字慢** | base64 让体积再涨 1/3，几 MB 的图大约要等 1 秒。另外超过 20MB 的图会被自动缩尺寸，缩过会弹通知说明 |
 | **历史只有 4 条、且关浏览器即清** | 存内存是为隐私（剪贴板里可能有过密码）。**关掉浏览器或重启电脑，历史就没了**（这是设计如此，不是 bug） |
 | **巡检有 2 秒延迟** | 网页自带「复制」按钮写进剪贴板的内容，最多 2 秒后才进历史（`Ctrl+C` 是即时的） |
-| **桥必须常驻** | 电脑关了、桥进程挂了就发不出去。桥会明确报错，不会静默失败 |
+| **桥必须常驻** | 电脑关了、桥进程挂了就发不出去。`1.0.4` 起弹窗上多了「启动本地桥」按钮，不用再去翻 `start_bridge.bat` |
+| **那个按钮要靠桥"先登记过一次"** | 登记信息由桥在启动时自己写。所以升级到 `1.0.4` 后请**重启一次桥**（双击 `bridge\start_bridge.bat`）—— 这一次就是"首次登记"，之后重启电脑就能直接点按钮了。万一忘了，按钮会明确告诉你"还没登记"，并让你双击 `bridge\重新登记.bat` |
+| **升级到 `1.0.4` 会多要一次权限确认** | 新增了 `nativeMessaging`（"允许扩展跟本地程序对话"）。在 `chrome://extensions` 点「重新加载」后浏览器会提示，**不确认的话扩展处于停用状态** |
 
 ---
 
@@ -540,7 +592,7 @@ a permissions policy applied to the current document.
    return fp.allowsFeature('clipboard-read') !== false;   // 问不出来就放行
    ```
 
-   （`document.featurePolicy` 是旧名，Chrome 已改叫 `document.permissionsPolicy`，两个都探。）
+   （这两个名字都探：`document.permissionsPolicy` 是新名，但**实测在 Chromium 138 和 151 上它都是 `undefined`** —— 现在还只有旧名 `document.featurePolicy` 真正存在，所以两个都得留着。）
 
 配套的三条设计取舍：
 
@@ -549,6 +601,50 @@ a permissions policy applied to the current document.
 - **还得有自愈。** 探测覆盖的是"我能想到的情形"，万一还有想不到的：`content.js` 认出策略类报错（`/permissions? policy|feature policy|disabled in this document/i`）后**永久闭嘴**，否则它会每 2 秒往错误页里刷一条。⚠️ 匹配串**刻意只认"策略"字样**：`NotAllowedError` 还有另一种来源是 `Document is not focused`（"判断焦点"和"真正读"之间被抢走焦点），那是偶发、下次就好，把它误判成永久状况的代价是整页快照停摆。
 
 验证：`tools/test_clip_policy.js` 把 `clipReadAllowed` 与 `looksLikePolicyBlock` **从真实源码里切出来**（按花括号配平）跑 20 项。判定的标准不是"函数返回了啥"，而是**假剪贴板有没有被调用** —— 被拦时 `readText` 必须 0 次，那才是浏览器不报错的真正原因。
+
+### ⚠️「扩展启动本地程序」只有一条路，而且它的"登记位置"不能靠文档猜（`1.0.4`）
+
+需求是"点一下就把桥拉起来"。先把边界钉死：
+
+| 直觉上的做法 | 实际情况 |
+|---|---|
+| 扩展直接 `exec` 一个 .bat | ❌ 没有这种 API |
+| 用文件选择框让用户选 `start_bridge.bat`，扩展记住路径 | ❌ 浏览器**拿不到真实路径**，`File` 对象只给 `C:\fakepath\xxx`（安全限制，无解） |
+| 把路径存进 `storage` 再调用 | ❌ 存得下，但**没有"运行本地程序"这个 API**可调 |
+| **Native Messaging** | ✅ 官方唯一通道：扩展跟一个"宿主程序"对话，由宿主去启动别的东西 |
+
+于是链路成了：扩展 → `sendNativeMessage` → Chrome 按注册表找到宿主 → 宿主拉起桥。
+
+**坑一：注册表路径随浏览器品牌变，"写两个位置就万无一失"是想当然。**
+
+一开始按 Chromium 源码的印象写了 `Software\Chromium\…` + `Software\Google\Chrome\…`。后来把木木实际在用的 **Thorium（Chromium 138）** 的 `chrome.dll`（260 MB）全文搜了一遍 `NativeMessagingHosts`，只搜出**两条**路径字面量：
+
+```
+SOFTWARE\Thorium\NativeMessagingHosts        ← 它自己的
+SOFTWARE\Google\Chrome\NativeMessagingHosts  ← 兜底
+```
+
+**根本没有 `Software\Chromium`。** 也就是说当时能通，全靠"Google\Chrome 兜底"这条运气 —— 一旦哪天兜底逻辑变了，表现就是"点了按钮没反应"，而扩展那边**一个错都不报**。
+
+> 教训：**注册表位置不能靠文档猜**（各分支会把产品名换掉）。要么实测，要么直接从主程序里搜字符串 —— 后者的好处是可复核、可重复。这就是 `tools/probe-native-roots.py` 存在的理由：它把浏览器主程序里的路径字面量捞出来，和我们实际登记的位置做**差集**，缺一处就报 FAIL。换浏览器时先跑它。
+
+另外两个白捡的发现：`--load-extension` 在 **Chromium 137+ 已被移除**（本机实测：带上它、并把 Playwright 默认追加的 `--disable-extensions` 排除掉，`chrome://extensions` 里依然是 0 个扩展），新的 CDP `Extensions.loadUnpacked` 域在 138 上也不可用（`Method not available`）—— 所以"自动化加载扩展 + 触发原生消息"这条路**走不通**，最后一跳只能手工验一次。`tools/test_native_host.py` 的 `[1b]` 因此改成**按浏览器自己的规则模拟查找**（顺序、清单字段逐条验），把手工验证的失败面缩到最小。
+
+**坑二：宿主入口那个 `.bat` 是"一个字节都不能多说"的程序。**
+
+宿主跟浏览器的通道就是 stdin/stdout，协议是「4 字节小端长度 + UTF-8 JSON」。往 stdout 多写一个字符（一句 `echo`、一行 `chcp` 的提示），整个协议就乱掉，而浏览器只会回一句 `native host has exited` 这种跟真实原因毫无关系的话。所以：
+
+- `qq_host.bat` 里 `chcp 65001 >nul`（不重定向会打一行 "Active code page: 65001"）、不写任何裸 `echo`、出错只往日志文件写
+- 批处理内容**必须纯 ASCII** —— cmd.exe 是按 OEM 代码页（本机 936/GBK）读批处理的，写中文进去就是乱码
+- 批处理**用 CRLF 行尾** —— LF 对 `goto` / 标签这类结构不可靠
+- `qq_native_host.py` 里 `serve()` 那条路上一句 `print` 都没有（只有手动 `--register` 的 `cli()` 才有），并且显式把 stdout 切成二进制模式（免得 CRLF 转换插一脚）
+- 自检里对 stdout 做**逐字节**校验：必须正好是 `4 + len` 个字节
+
+**坑三：Chrome 回完话就把宿主进程杀掉 —— 它拉起的桥必须能活下来。**
+
+不然这个功能就是"点了没反应"。`tools/test_native_host.py` 的第 5 段专门验这个：让沙箱宿主真的拉起一个 stub，等宿主进程退出后**继续观察 5 秒**，确认 stub 还在干活（tick 还在涨）。同时也验了窗口确实**最小化**（`IsIconic`）且**没抢到前台焦点**（`GetForegroundWindow`），以及**含中文的路径能穿过 `cmd /d /s /c`**。
+
+顺带一个量版式的教训：状态行只有 272px。启动过程中的"已等 N 秒"最初写在状态行里，实测**只剩 10px 余量**（字体一换就会掉成两行）→ 改成写在按钮上。量这个不能用肉眼，也不能直接量元素宽度 —— `#statusText` 是 `flex: 1`，它会自己撑满剩余空间，量出来永远是"刚好占满"，什么问题都发现不了。正确做法是另起一个 `white-space: nowrap` 的隐身元素量文字的自然宽度，见 `tools/measure-popup-row.py`。
 
 ### 其它
 

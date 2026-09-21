@@ -64,6 +64,10 @@
 
    图片的「超 20MB 缩尺寸」和「格式被拒就转 PNG」都放在桥那边用
    Pillow 做，扩展这边只负责读图、转 base64、读出宽高。
+
+   ⚠️ 1.0.4 新增「启动本地桥」按钮（见下面 launchBridge 那一段）：
+   重启电脑后桥不会自己跑起来，以前得去磁盘里翻 start_bridge.bat。
+   现在弹窗上那个按钮会经 Native Messaging 让宿主把桥拉起来。
    ============================================================ */
 
 /* imageutil.js 必须在这里同步加载：service worker 里没有 FileReader，
@@ -724,7 +728,8 @@ async function sendTextRun(content, source) {
   } catch (e) {
     return await fail(
       '连不上本地桥（127.0.0.1:18761）。',
-      '最常见的原因：桥程序没在运行。双击 bridge\\start_bridge.bat 启动它。'
+      '最常见的原因：桥程序没在运行。回到弹窗点「启动本地桥」，' +
+      '或双击 bridge\\start_bridge.bat 启动它。'
     );
   }
 
@@ -781,7 +786,8 @@ async function sendImageRun(image, source) {
   } catch (e) {
     return await fail(
       '连不上本地桥（127.0.0.1:18761）。',
-      '最常见的原因：桥程序没在运行。双击 bridge\\start_bridge.bat 启动它。'
+      '最常见的原因：桥程序没在运行。回到弹窗点「启动本地桥」，' +
+      '或双击 bridge\\start_bridge.bat 启动它。'
     );
   }
 
@@ -975,6 +981,66 @@ async function getHealth() {
   }
 }
 
+/* ---------------------------------------------- 启动本地桥（v1.0.4）
+
+   浏览器**不允许**扩展直接运行本地程序 —— 没有这种 API。Chrome 官方
+   给的唯一通道叫 Native Messaging：扩展只能跟一个"宿主程序"说话，由
+   宿主去启动别的东西。所以链路是：
+
+     点「启动本地桥」
+       → chrome.runtime.sendNativeMessage('com.mumu.qq_bridge', {cmd:'start'})
+         → Chrome 按注册表找到 bridge\qq_host.bat 并把它拉起来
+           → 它执行 qq_native_host.py
+             → 那个脚本先看 18761 端口在不在，不在才拉起 start_bridge.bat
+               （最小化到任务栏）
+
+   「宿主在哪」这份登记信息由**桥自己**在启动时写好（它一启动就知道自己
+   的绝对路径），所以正常情况下这里一次都不会失败。真失败了也不许静默 ——
+   下面把浏览器的英文原话翻成人话，并说清下一步该双击哪个文件。 */
+
+const NATIVE_HOST = 'com.mumu.qq_bridge';
+
+/* 浏览器的报错只有那么几句固定的英文，逐句对上号。
+   兜底一律**带上原文** —— 万一将来冒出没见过的一句，原样带出来才好排查，
+   绝不能自己编一句"启动失败"把线索吃掉（这是本项目最贵的反模式）。 */
+function explainNativeError(e) {
+  const raw = String((e && e.message) ? e.message : e).trim();
+
+  if (/is not registered/i.test(raw)) {
+    return {
+      reason: '本地桥的启动入口还没登记。',
+      detail: '双击 bridge\\重新登记.bat 登记一次即可。\n' +
+        '（桥每次启动都会自己登记，所以看到这句通常说明 bridge 文件夹' +
+        '被搬过位置，或登记项被清理软件删掉了。）'
+    };
+  }
+  if (/forbidden/i.test(raw)) {
+    return {
+      reason: '浏览器不允许这个扩展使用该启动入口。',
+      detail: '宿主清单里的 allowed_origins 与当前扩展 ID 对不上，\n' +
+        '多半是扩展被重新安装过（换了 ID）。告诉 WorkBuddy 重新生成宿主清单。'
+    };
+  }
+  if (/not found|no such native/i.test(raw)) {
+    return {
+      reason: '找不到宿主程序文件。',
+      detail: '登记信息指向的 bridge\\qq_host.bat 不在了。\n' +
+        '把 bridge 文件夹放回原位置，或双击 bridge\\重新登记.bat。'
+    };
+  }
+  return { reason: '没能启动本地桥。', detail: raw };
+}
+
+async function launchBridge() {
+  try {
+    const r = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { cmd: 'start' });
+    return { ok: true, data: r || {} };
+  } catch (e) {
+    const x = explainNativeError(e);
+    return { ok: false, reason: x.reason, detail: x.detail };
+  }
+}
+
 /* ---------------------------------------------- 给已打开的标签页补装监听
 
    manifest 里的 content_scripts 只对「之后加载的页面」生效。扩展一
@@ -1069,6 +1135,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'get-health') {
     getHealth().then(sendResponse).catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (msg.type === 'launch-bridge') {
+    /* 弹窗上那个「启动本地桥」按钮。宿主自己会判断"桥已经在跑了吗"，
+       所以这个操作是幂等的 —— 连点几下也不会起出第二个桥。 */
+    launchBridge()
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e), detail: '' }));
     return true;
   }
   if (msg.type === 'get-last') {

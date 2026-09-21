@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-QQ 转发助手 · 本地桥程序  v1.0.1
+QQ 转发助手 · 本地桥程序  v1.0.4
 
 职责：
   1. 用官方 SDK 连上 QQ 机器人（WebSocket，不需要公网 IP、不需要备案域名）
@@ -44,7 +44,7 @@ LOG_DIR = os.path.join(BASE, "log")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_PATH = os.path.join(LOG_DIR, "bridge_%s.log" % datetime.now().strftime("%Y%m%d"))
 
-VERSION = "1.0.1"
+VERSION = "1.0.4"
 
 _log = logging.getLogger("bridge")
 
@@ -705,6 +705,35 @@ async def h_lastlog(request):
     return web.Response(text=text, content_type="text/plain", charset="utf-8")
 
 
+# ---------------------------------------------------------------- 自登记宿主
+
+def self_register_host():
+    """把"宿主程序在哪"登记到注册表里，让扩展那个按钮能拉起桥。
+
+    为什么放在桥里做：桥一启动就知道自己的绝对路径，写出来的登记信息
+    必然是对的（搬了文件夹也不会失联）；换成让木木去双击一个脚本，
+    就多了一次"我忘了放哪"的机会。
+
+    ⚠️ 这里**绝不能**让桥启动失败 —— 登记只是副产品，出任何问题都只
+    记一条日志。真的登记不上，双击 bridge\\重新登记.bat 还能补救。"""
+    try:
+        if BASE not in sys.path:
+            sys.path.insert(0, BASE)
+        import qq_native_host
+        ok, failed = qq_native_host.register_host(logger=lambda m: None)
+        if ok:
+            _log.info("扩展启动入口已登记 (%d/%d): %s",
+                      len(ok), len(ok) + len(failed), "; ".join(ok))
+        else:
+            _log.warning("扩展启动入口登记失败，将在 --status 里可见")
+        for k, m in failed:
+            _log.warning("  登记失败 HKCU\\%s -> %s", k, m)
+        return bool(ok)
+    except Exception:
+        _log.warning("自登记出错（不影响桥运行）:\n%s", traceback.format_exc())
+        return False
+
+
 # ---------------------------------------------------------------- 主流程
 
 async def main():
@@ -766,6 +795,10 @@ if __name__ == "__main__":
     _log.info("QQ 转发助手 · 本地桥 v%s", VERSION)
     _log.info("日志文件: %s", LOG_PATH)
     _log.info("=" * 64)
+
+    # 顺手让扩展那个「启动本地桥」按钮能生效。失败也不拦着桥启动。
+    self_register_host()
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

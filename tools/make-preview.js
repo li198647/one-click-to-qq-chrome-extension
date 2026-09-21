@@ -5,10 +5,11 @@
  * 只把 chrome.* 接口打桩喂假数据 —— 所以样式和渲染逻辑跟真身是同一份，
  * 不会出现"预览好看、实际不一样"的情况。
  *
- * 一次生成三种状态并排的索引页（正常 / 长文本 / 出错），
+ * 一次生成五种状态并排的索引页（正常 / 长文本 / 出错 / 连不上桥 / 正在启动），
  * 目的是能一眼看全"改完版式之后各种情况下长什么样"。
+ * v1.0.4 加的后两个是那个「启动本地桥」按钮的两种出现时机。
  *
- * 用法（PowerShell）： node tools\make-preview.js
+ * 用法（bash 或 PowerShell 都行）： node tools/make-preview.js
  * 生成物 tools/preview-*.html 已在 .gitignore 里，属于本地开发产物。
  */
 
@@ -23,30 +24,33 @@ const mf = JSON.parse(fs.readFileSync(path.join(ext, 'manifest.json'), 'utf8'));
 const now = Date.now();
 
 const HEALTH = { ok: true, data: { bot_ready: true, has_openid: true, send_ok: 14, send_fail: 0 } };
+const NO_BRIDGE = { ok: false, error: 'TypeError: Failed to fetch' };
 const LAST = { ok: true, last: { ok: true, at: now - 120000, source: '剪贴板' } };
+
+const LIST_OK = [
+  { source: '选中文字', text: 'qq好友', preview: 'qq好友', totalChars: 4, truncated: false },
+  { source: '剪贴板历史', text: '将要发送 · 来自选中文字', preview: '将要发送 · 来自选中文字', totalChars: 14, truncated: false },
+  { source: '剪贴板历史', text: '2700+ Star', preview: '2700+ Star', totalChars: 11, truncated: false },
+  { source: '剪贴板历史', text: 'Markdown', preview: 'Markdown', totalChars: 8, truncated: false }
+];
 
 const STATES = [
   {
     key: 'ok',
     label: '① 正常 · 短文本',
-    note: '和木木截图里一样是 4 个字',
+    note: '和最常用的那种情况一样。状态行里没有按钮 —— v1.0.4 的按钮只在该出现时出现',
     clip: 'qq好友',
     height: 620,
     preview: {
       ok: true, max: 4, note: '',
       stats: { '切回页面': 1, '网页复制': 4, '页面剪贴板': 1 },
-      list: [
-        { source: '选中文字', text: 'qq好友', preview: 'qq好友', totalChars: 4, truncated: false },
-        { source: '剪贴板历史', text: '将要发送 · 来自选中文字', preview: '将要发送 · 来自选中文字', totalChars: 14, truncated: false },
-        { source: '剪贴板历史', text: '2700+ Star', preview: '2700+ Star', totalChars: 11, truncated: false },
-        { source: '剪贴板历史', text: 'Markdown', preview: 'Markdown', totalChars: 8, truncated: false }
-      ]
+      list: LIST_OK
     }
   },
   {
     key: 'long',
     label: '② 长文本 · 只显示开头',
-    note: '框里 20 字 + …（原来那行「共 650 字」已去掉）',
+    note: '框里 20 字 + …（「共 N 字」那行已去掉）',
     clip: 'https://item.taobao.com/item.htm?id=123456789012345678',
     height: 620,
     preview: {
@@ -73,12 +77,46 @@ const STATES = [
       detail: 'chrome:// 开头的页面、扩展商店、新标签页，Chrome 不允许扩展读取选中文字和标题。',
       list: [], note: '', stats: {}
     }
+  },
+  {
+    key: 'nobridge',
+    label: '④ 连不上桥 · 按钮出现',
+    note: 'v1.0.4 新增。桥没在跑时，状态行右边才多出这个按钮；点它就由宿主把桥拉起来',
+    clip: 'qq好友',
+    height: 620,
+    health: NO_BRIDGE,
+    preview: {
+      ok: true, max: 4, note: '',
+      stats: { '网页复制': 2 },
+      list: LIST_OK
+    }
+  },
+  {
+    key: 'starting',
+    label: '⑤ 正在启动 · 按钮禁用',
+    note: '点下去之后的真实过程：按钮变「正在启动…」并禁用，下面按 1.5 秒一轮去问桥起来没有',
+    clip: 'qq好友',
+    height: 620,
+    health: NO_BRIDGE,
+    launch: { ok: true, data: { ok: true, action: 'launching', pid: 12345, listening: false } },
+    /* 加载完自动点一下 —— 走的是**真实**的点击处理函数，不是把字面值改上去 */
+    afterLoad: "setTimeout(function(){ var b=document.getElementById('bridgeBtn'); if(b) b.click(); }, 400);",
+    preview: {
+      ok: true, max: 4, note: '',
+      stats: { '网页复制': 2 },
+      list: LIST_OK
+    }
   }
 ];
 
 /* 把 chrome.* 打桩成喂假数据的版本。先注入桩，再放真实的 popup.js。 */
 function buildStub(st) {
-  const table = { preview: st.preview, health: HEALTH, last: LAST };
+  const table = {
+    preview: st.preview,
+    health: st.health || HEALTH,
+    last: LAST,
+    launch: st.launch || { ok: false, reason: '（预览页没有打桩）', detail: '' }
+  };
   return `
 window.chrome = {
   runtime: {
@@ -88,6 +126,7 @@ window.chrome = {
       if (msg.type === 'get-preview') return Promise.resolve(table.preview);
       if (msg.type === 'get-health') return Promise.resolve(table.health);
       if (msg.type === 'get-last') return Promise.resolve(table.last);
+      if (msg.type === 'launch-bridge') return Promise.resolve(table.launch);
       return Promise.resolve({ ok: true });
     }
   }
@@ -109,7 +148,8 @@ const popupJs = fs.readFileSync(path.join(ext, 'popup.js'), 'utf8');
 for (const st of STATES) {
   let html = popupHtml.replace(
     '<script src="popup.js"></script>',
-    '<script>' + buildStub(st) + '</script>\n  <script>' + popupJs + '</script>'
+    '<script>' + buildStub(st) + '</script>\n  <script>' + popupJs + '</script>\n  ' +
+    (st.afterLoad ? '<script>' + st.afterLoad + '</script>' : '')
   );
   /* 预览页给弹窗留出同样的宽度，外面套一层浅灰底便于看边界。 */
   html = html.replace(
@@ -157,7 +197,7 @@ const index = [
   '</head>',
   '<body>',
   '<h1>弹窗预览 · v' + mf.version + '</h1>',
-  '<p class="tip">用真实的 popup.html + popup.js 渲染，只把 chrome 接口打桩喂假数据 —— 和装上去看到的是同一份。</p>',
+  '<p class="tip">用真实的 popup.html + popup.js 渲染，只把 chrome 接口打桩喂假数据 —— 和装上去看到的是同一份。④⑤ 是 v1.0.4 那个「启动本地桥」按钮的两种时机。</p>',
   '<div class="wrap">',
   cols,
   '</div>',
@@ -167,5 +207,5 @@ const index = [
 
 fs.writeFileSync(path.join(__dirname, 'preview-popup.html'), index, 'utf8');
 console.log('preview written:');
-console.log('  tools/preview-popup.html  (索引，三种状态并排)');
+console.log('  tools/preview-popup.html  (索引，五种状态并排)');
 STATES.forEach((st) => console.log('  tools/preview-popup-' + st.key + '.html'));

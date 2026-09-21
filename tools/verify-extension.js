@@ -2,7 +2,8 @@
    用法： node tools\verify-extension.js
    结果写到 tools\verify-extension.txt（该文件被 .gitignore 忽略）
 
-   在 PowerShell 里跑、不要用 bash（本机 git-bash 的 PATH 是坏的）。
+   在 bash 或 PowerShell 里都能跑（node 的绝对路径：
+   C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2-3\node.exe）。
    注意：读 JSON 一定要用 node —— PowerShell 的 ConvertFrom-Json 会把
    UTF-8 中文读成乱码，然后谎报 JSON 语法错误。 */
 
@@ -331,7 +332,7 @@ check('桥: 请求体上限已放开（aiohttp 默认 1MB 会把图片挡成 413
   /client_max_size=MAX_BODY_BYTES/.test(bridge));
 check('桥: 自己取 access_token 并缓存（不碰 botpy 私有结构）',
   /async def get_access_token/.test(bridge) && /_TOKEN\["expire_at"\]/.test(bridge));
-check('桥: 版本号 1.0.1', /^VERSION = "1\.0\.1"$/m.test(bridge));
+check('桥: 版本号 1.0.4（启动时自登记那一版）', /^VERSION = "1\.0\.4"$/m.test(bridge));
 
 /* ---------- v1.0.2：storage.session 配额防线（两道） ---------- */
 
@@ -390,6 +391,151 @@ check('守卫: 自愈 —— 真被策略拒过一次就永久闭嘴（轮询 2 
   /if \(policyBlocked\) return false;/.test(content));
 check('守卫: 自愈只认"策略"字样（偶发的 Document is not focused 不能被永久关掉）',
   /permissions\? policy\|feature policy\|disabled in this document/.test(content));
+
+/* ---------- v1.0.4：弹窗上的「启动本地桥」按钮 ----------
+
+   木木的要求原话："我重启电脑后，这个插件让我自己手动打开桥文件，我以后
+   会忘了桥文件放在哪。所以我想加个功能……如果以后不能连接到桥文件，再按
+   一次这个按钮就能自动运行桥文件。"
+
+   实现走的是 Chrome 唯一的合法通道 Native Messaging（扩展不能直接运行
+   本地程序）。链路与"能跑通"由 tools/test_native_host.py 实测 42 项
+   （含：中文路径穿过 cmd、stdout 零多余字节、窗口最小化、宿主被回收后
+   桥仍活着）。这里只钉结构，防"哪天顺手删了某一段没人发现"。 */
+
+check('v1.0.4: manifest 版本 1.0.4', !!m && m.version === '1.0.4', m ? m.version : '');
+check('v1.0.4: manifest 声明 nativeMessaging 权限', !!m &&
+  Array.isArray(m.permissions) && m.permissions.indexOf('nativeMessaging') >= 0,
+  m ? (m.permissions || []).join(',') : '');
+
+let host = '';
+try { host = fs.readFileSync(path.join(root, 'bridge', 'qq_native_host.py'), 'utf8'); } catch (e) { /* 忽略 */ }
+let hostBatBuf = null;
+try { hostBatBuf = fs.readFileSync(path.join(root, 'bridge', 'qq_host.bat')); } catch (e) { /* 忽略 */ }
+let reRegBuf = null;
+try { reRegBuf = fs.readFileSync(path.join(root, 'bridge', '重新登记.bat')); } catch (e) { /* 忽略 */ }
+
+check('v1.0.4: 三个新文件都在（宿主逻辑 / 宿主入口 / 兜底登记）',
+  !!host && !!hostBatBuf && !!reRegBuf);
+
+/* 批处理必须是纯 ASCII + CRLF：cmd 按 OEM 代码页（本机 936/GBK）读批处理，
+   写中文进去会乱码；LF 行尾对 goto / 标签这类结构不可靠。 */
+check('v1.0.4: qq_host.bat 纯 ASCII 且 CRLF',
+  !!hostBatBuf && hostBatBuf.every((b) => b < 128) &&
+  hostBatBuf.filter((b) => b === 10).length === hostBatBuf.filter((b) => b === 13).length &&
+  hostBatBuf.filter((b) => b === 10).length > 0);
+check('v1.0.4: 重新登记.bat 纯 ASCII 且 CRLF',
+  !!reRegBuf && reRegBuf.every((b) => b < 128) &&
+  reRegBuf.filter((b) => b === 10).length === reRegBuf.filter((b) => b === 13).length);
+/* chcp 不带 >nul 会往 stdout 吐一行 "Active code page: 65001" ——
+   宿主入口的 stdout 就是 Chrome 的消息管道，多一个字节整个协议就废了。 */
+check('v1.0.4: qq_host.bat 的 chcp 带 >nul（stdout 一个字节都不能多）',
+  !!hostBatBuf && hostBatBuf.toString('latin1').toLowerCase().indexOf('chcp 65001 >nul') >= 0);
+
+check('v1.0.4: 宿主按官方协议读 4 字节小端长度', /struct\.unpack\("<I", head\)/.test(host));
+check('v1.0.4: 宿主回复也带 4 字节长度前缀', /struct\.pack\("<I", len\(payload\)\)/.test(host));
+check('v1.0.4: 宿主把 stdout 切二进制（避免 CRLF 转换）',
+  /def _binary_stdio/.test(host) && /setmode\(sys\.stdout\.fileno\(\), os\.O_BINARY\)/.test(host));
+/* 关键：serve 那条路上绝不能出现 print —— 只有 cli 那段（手动跑）才允许。 */
+check('v1.0.4: 协议通路上一个 print 都没有',
+  host.indexOf('def cli') > 0 &&
+  host.slice(0, host.indexOf('def cli')).indexOf('print(') === -1);
+
+check('v1.0.4: 幂等 —— 已经在跑就不重复拉起第二个桥',
+  /alive, detail = probe_bridge\(port\)/.test(host) &&
+  /"action": "already-running"/.test(host) &&
+  host.indexOf('"already-running"') < host.indexOf('pid = launch_bridge()'));
+
+check('v1.0.4: 用 cmd /d /s /c 包一层（CreateProcess 不认 .bat）',
+  /\/d \/s \/c/.test(host) && /CREATE_NEW_CONSOLE/.test(host));
+check('v1.0.4: 窗口最小化（SW_SHOWMINNOACTIVE=7，任务栏留图标不抢焦点）',
+  /SW_SHOWMINNOACTIVE = 7/.test(host) && /si\.wShowWindow = SW_SHOWMINNOACTIVE/.test(host));
+check('v1.0.4: 登记位置覆盖 Thorium / Google\\Chrome / Chromium 三处',
+  (() => {
+    const flat = host.replace(/\\/g, '');
+    return flat.indexOf('SoftwareThoriumNativeMessagingHosts') >= 0 &&
+      flat.indexOf('SoftwareGoogleChromeNativeMessagingHosts') >= 0 &&
+      flat.indexOf('SoftwareChromiumNativeMessagingHosts') >= 0;
+  })());
+/* 这一条是踩出来的：Thorium 的 chrome.dll 里只硬编码了
+   SOFTWARE\Thorium\… 和 SOFTWARE\Google\Chrome\…，**没有** Software\Chromium。
+   当初只写后者 + Google\Chrome，能通全靠兜底那一条。 */
+check('v1.0.4: Thorium 那一处写在最前面（木木实际在用的浏览器）',
+  host.indexOf('Software\\\\Thorium\\\\NativeMessagingHosts') > 0 &&
+  host.indexOf('Software\\\\Thorium\\\\NativeMessagingHosts') <
+  host.indexOf('Software\\\\Google\\\\Chrome\\\\NativeMessagingHosts'));
+check('v1.0.4: 只写 HKCU（不需要管理员权限，卸载只删自己那两项）',
+  /HKEY_CURRENT_USER/.test(host) && !/HKEY_LOCAL_MACHINE/.test(host));
+check('v1.0.4: allowed_origins 写死了扩展 ID（写错 = 永远连不上，且扩展不报错）',
+  /EXT_ID = "onpgmgnpdgkhebogdflhbojdchcbegcg"/.test(host) &&
+  /"chrome-extension:\/\/%s\/" % EXT_ID/.test(host) &&
+  /"allowed_origins": \["chrome-extension:\/\/%s\/" % EXT_ID\]/.test(host));
+check('v1.0.4: 登记信息由桥自己生成 —— 路径必然是真的',
+  /MANIFEST_PATH = os\.path\.join\(BASE/.test(host) &&
+  /"path": HOST_BAT/.test(host));
+check('v1.0.4: 桥启动时会自登记，且失败不影响桥本身',
+  /def self_register_host/.test(bridge) &&
+  /self_register_host\(\)/.test(bridge) &&
+  /自登记出错（不影响桥运行）/.test(bridge));
+
+check('v1.0.4: background 用 sendNativeMessage 喊宿主',
+  /chrome\.runtime\.sendNativeMessage\(NATIVE_HOST/.test(bg));
+check('v1.0.4: 宿主名两边一致',
+  /const NATIVE_HOST = 'com\.mumu\.qq_bridge';/.test(bg) &&
+  /HOST_NAME = "com\.mumu\.qq_bridge"/.test(host));
+check('v1.0.4: launch-bridge 消息通道存在', /msg\.type === 'launch-bridge'/.test(bg));
+check('v1.0.4: 失败不静默 —— 三种常见英文报错都翻成人话并指出下一步',
+  /is not registered/i.test(bg) && /forbidden/i.test(bg) &&
+  /重新登记\.bat/.test(bg) && /还没登记/.test(bg));
+check('v1.0.4: 兜底带着浏览器原文（绝不自己编一句"启动失败"把线索吃掉）',
+  /const raw = String\(\(e && e\.message\) \? e\.message : e\)/.test(bg) &&
+  /return \{ reason: '没能启动本地桥。', detail: raw \};/.test(bg));
+
+check('v1.0.4: 按钮在状态行里，且默认隐藏',
+  (() => {
+    const a = html.indexOf('<div class="row">');
+    const b = html.indexOf('</div>', a);
+    const seg = (a >= 0 && b > a) ? html.slice(a, b) : '';
+    return seg.indexOf('id="bridgeBtn"') >= 0 &&
+      /id="bridgeBtn"[^>]*display:none/.test(seg) &&
+      seg.indexOf('id="statusText"') >= 0;
+  })());
+check('v1.0.4: 按钮刻意做小（22px），免得把状态行撑高',
+  /button\.rowBtn\s*\{[^}]*height:\s*22px/.test(html));
+check('v1.0.4: 只在"连不上本地桥"那一支里显示（其余三种状态点了没意义）',
+  (() => {
+    const a = popup.indexOf('async function refreshHealth');
+    const b = popup.indexOf('bridgeBtn.addEventListener');
+    const seg = (a >= 0 && b > a) ? popup.slice(a, b) : '';
+    if (!seg) return false;
+    const t = (seg.match(/showBridgeBtn\(true\)/g) || []).length;
+    const f = (seg.match(/showBridgeBtn\(false\)/g) || []).length;
+    const badSeg = seg.indexOf('if (!r || !r.ok)');
+    const tPos = seg.indexOf('showBridgeBtn(true)');
+    return t === 1 && f === 1 && badSeg >= 0 && tPos > badSeg && (tPos - badSeg) < 400;
+  })());
+check('v1.0.4: 启动期间健康检查不许把"正在启动…"刷回"启动本地桥"',
+  /let launching = false;/.test(popup) &&
+  /if \(!launching\) showBridgeBtn\(true\)/.test(popup));
+check('v1.0.4: 点下去会轮询等桥真的应答（30 秒上限），不直接宣布成功',
+  /async function waitBridgeUp/.test(popup) &&
+  /BRIDGE_UP_MS = 30000/.test(popup) &&
+  /const up = already \? true : await waitBridgeUp\(t0\)/.test(popup));
+check('v1.0.4: 秒数写在按钮上，不写进状态行（状态行只剩 272px，实测余量会掉到 10px）',
+  /bridgeBtn\.textContent = '启动中…' \+ elapsedSec\(t0\) \+ 's';/.test(popup) &&
+  popup.indexOf("已等 ' +") === -1);
+check('v1.0.4: 启动过程那两条状态文案都刻意短（正在启动本地桥… / 正在连接机器人…）',
+  /setStatus\('', '正在启动本地桥…'\)/.test(popup) &&
+  /setStatus\('', '正在连接机器人…'\)/.test(popup));
+check('v1.0.4: 桥已在跑时不干等（宿主会回 already-running）',
+  /action === 'already-running'/.test(popup));
+check('v1.0.4: 等不到就把话说白，不假装成功',
+  /桥还是没应答/.test(popup));
+check('v1.0.4: 启动失败时把原因原样摊出来',
+  /没能启动本地桥：/.test(popup) && /await waitBotReady\(\)/.test(popup));
+check('v1.0.4: 三处"连不上桥"的提示都提到了新按钮',
+  (bg.match(/点「启动本地桥」/g) || []).length >= 2 &&
+  /点右边的「启动本地桥」/.test(popup));
 
 /* ---------- 输出 ---------- */
 out.push('');
