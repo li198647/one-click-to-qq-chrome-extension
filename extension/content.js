@@ -101,6 +101,35 @@
     }
   }
 
+  /* ---------------------------------------------- 两个时刻（v1.0.2）
+
+     弹窗需要判断「剪贴板里的图片」和「页面上的选中文字」谁更新。
+     只看"谁存在"是不够的：你复制完图片后，页面上那段文字的选中状态
+     **不会自动消失**，于是残留的选中文字会一直把图片挤掉 —— 表现就是
+     「再复制一次图片，弹窗里没有缩略图了」（木木报的 bug）。
+
+     Chrome 不给剪贴板变更通知，但这两件事各有可靠的观察点：
+       · 选中文字变化 → selectionchange（拖选、双击都会触发）
+       · 复制到图片   → copy 事件里 clipboardData.types 含 image/*
+     挂到 window 上，后台注入的 probePage() 直接读（同一个 isolated world，
+     和 qqImg 取得到是同一个道理）。 */
+
+  if (typeof window.__qqSendSelAt !== 'number') window.__qqSendSelAt = 0;
+  if (typeof window.__qqSendImgCopyAt !== 'number') window.__qqSendImgCopyAt = 0;
+
+  on(document, 'selectionchange', function () {
+    try {
+      var sel = window.getSelection ? window.getSelection() : null;
+      /* isCollapsed 是最省的一步：点一下页面、拖滚动条都会触发这个事件，
+         而这些情况下根本没有选区，不必去 toString() 一份可能几十万字的
+         文本。判据和后台 probePage 里那句保持一致（都要 trim）。 */
+      var has = false;
+      if (sel && !sel.isCollapsed) has = !!String(sel).trim();
+      /* 选区被清空时也置 0 —— "没有选中文字"本身就是一条有效信息。 */
+      window.__qqSendSelAt = has ? Date.now() : 0;
+    } catch (e) { /* 忽略 */ }
+  }, true);
+
   /* ---------------------------------------------- ① copy / cut 事件 */
 
   /* 优先用事件自带的 clipboardData —— 有些页面会在这里做改写；
@@ -132,6 +161,25 @@
     };
   }
 
+  /* 右键「复制图片」也会派发 copy 事件，此时 clipboardData 里是 image/*、
+     取不到文字 —— handleCopyCut 会因此走"延后读剪贴板"那条路（读不到
+     文字就什么都不报），彼此不冲突。这里只做一件事：把"刚刚复制的是
+     图片"这件事记下来，并顺手把选中文字的时刻作废（复制图片这个动作
+     本身就已经把"想发那段选中文字"的意图顶掉了）。 */
+  function noteImageCopy(e) {
+    try {
+      var types = (e && e.clipboardData && e.clipboardData.types) || [];
+      for (var i = 0; i < types.length; i++) {
+        if (String(types[i]).indexOf('image/') === 0) {
+          window.__qqSendImgCopyAt = Date.now();
+          window.__qqSendSelAt = 0;
+          return;
+        }
+      }
+    } catch (err) { /* 忽略 */ }
+  }
+
+  on(document, 'copy', noteImageCopy, true);
   on(document, 'copy', handleCopyCut('网页复制'), true);
   on(document, 'cut', handleCopyCut('网页剪切'), true);
 
@@ -147,6 +195,21 @@
   var busy = false;
   var lastAttempt = 0;
 
+  /* v1.0.3：万一还是撞上了策略拦截（见 canRead 里的探测），也别一直撞 ——
+     浏览器每拒绝一次就在扩展的错误页里留一条红字，而这个轮询是每
+     2 秒一轮。所以"拒过一次就永久闭嘴"（只在这个 document 内），代价是
+     这一页的自动快照停摆；网页里的「复制」事件通路不读剪贴板，不受影响。
+
+     ⚠️ 匹配串只认"策略"字样。NotAllowedError 还有另一种来源是
+     「Document is not focused」—— 那是"判断焦点"和"真正读"之间被抢走
+     焦点的偶发情况，下一次就好了，绝不能当成永久状况把功能关掉。 */
+  var policyBlocked = false;
+
+  function looksLikePolicyBlock(e) {
+    var s = String((e && e.name) || '') + ' ' + String((e && e.message) || '');
+    return /permissions? policy|feature policy|disabled in this document/i.test(s);
+  }
+
   function focusedHere() {
     try { return !!document.hasFocus(); } catch (e) { return false; }
   }
@@ -157,7 +220,19 @@
 
   function canRead() {
     try {
-      return !!(navigator.clipboard && navigator.clipboard.readText);
+      if (policyBlocked) return false;
+      if (!navigator.clipboard || !navigator.clipboard.readText) return false;
+
+      /* v1.0.3：还要问一句"这个文档允许读剪贴板吗"。
+         reverso.net 这类站点用 Permissions-Policy 关掉了 clipboard-read，
+         硬读会被浏览器拦下并在扩展的错误页里刷红字，而那条报错是浏览器
+         自己打印的、try/catch 接不住 —— 只能先问再叫。
+         判断函数放在共用的 imageutil.js 里，background.js 的探针用的是
+         同一份（各写一份迟早走偏）。它取不到时按"允许"处理。 */
+      if (typeof qqImg !== 'undefined' && qqImg && qqImg.clipReadAllowed) {
+        return qqImg.clipReadAllowed();
+      }
+      return true;
     } catch (e) { return false; }
   }
 
@@ -180,12 +255,17 @@
         var b = '';
         try {
           b = String((await navigator.clipboard.readText()) || '').trim();
-        } catch (e) { return; }
+        } catch (e) {
+          if (looksLikePolicyBlock(e)) policyBlocked = true;
+          return;
+        }
         if (a !== b) return;
 
         report(a, how);
       } catch (e) {
-        /* 读不到就静默等下一次时机，不打扰你 */
+        /* 读不到就静默等下一次时机，不打扰你 —— 但被策略拦下是"永久"的
+           一类，记下来别再试，否则每 2 秒往错误页里刷一条红字。 */
+        if (looksLikePolicyBlock(e)) policyBlocked = true;
       } finally {
         busy = false;
       }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "一键发到 QQ",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "把选中的文字、剪贴板内容、剪贴板里的图片或网页图片，一键发送到手机 QQ。弹窗里可查看并改选最近 4 条文字。",
   "permissions": [
     "scripting",

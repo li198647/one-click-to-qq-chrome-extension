@@ -81,6 +81,17 @@ const PREVIEW_LIMIT = 20;
 /* 候选列表最多几项（= 保留最近几次内容）。 */
 const HISTORY_MAX = 4;
 
+/* 单条能进历史的最大体积（UTF-8 字节）。
+
+   chrome.storage.session 的配额是 10,485,760 字节，而 set 是覆盖整个键 ——
+   超限不是"这一条存不进去"，而是**这一次写入整体作废**（官方原文：
+   updates that would cause this limit to be exceeded fail immediately）。
+   所以 4 条 × 512KB = 2MB，只占配额 20%，留 80% 余量。
+
+   被挡下的内容照样能发出去 —— 当前要发的那条来自剪贴板/页面，不经过历史，
+   代价只是"回头改选不到它"。图片的规则和这里是一致的。 */
+const STORE_ITEM_MAX = 512 * 1024;
+
 /* 历史存放位置：chrome.storage.session = 内存，关浏览器即清。
    不用 storage.local（会明文落盘）、更不用 storage.sync（会上传云端）。
    存的是一个对象 { items, stats }，不是纯数组。 */
@@ -135,6 +146,26 @@ async function notify(title, message) {
 
 const isText = (x) => typeof x === 'string' && !!x;
 
+/* UTF-8 字节数。中文一个字 3 字节 —— 拿 .length 当字节数会低估三倍，
+   而配额是按字节算的。TextEncoder 在 service worker 里有。 */
+function byteLen(s) {
+  const t = String(s == null ? '' : s);
+  try {
+    return new TextEncoder().encode(t).length;
+  } catch (e) {
+    return t.length * 3;   // 兜底：按最坏情况估，宁可高估
+  }
+}
+
+/* 历史出状况时留在这里的两句话，随消息带回弹窗显示。
+   刻意不落进 storage —— 那正是写不进去的地方。 */
+let storeWarn = '';   // 写入降级/失败
+let storeSkip = '';   // 上一次被"太大"挡在历史外的说明
+
+function storeNotice() {
+  return [storeSkip, storeWarn].filter(Boolean).join(' ');
+}
+
 async function readStore() {
   try {
     const o = await chrome.storage.session.get(HISTORY_KEY);
@@ -151,15 +182,40 @@ async function readStore() {
   return { items: [], stats: {} };
 }
 
+/* 写历史。撞配额时**逐级退让**，而不是静默失败。
+
+   chrome.storage 没有事务，也没有"只写这一条" —— 每次 set 都是覆盖整个键。
+   所以超限的后果是"这次写入整体作废"，不是"这条太大存不进"。反过来说，
+   少写一点是真的能救回来的，不是碰运气。
+
+   退让阶梯：4 条 → 2 条 → 1 条 → 清空。退到哪一级就把原因记下来，
+   由 storeNotice() 带回弹窗 —— 从前这里是个空 catch，配额一爆你就只会
+   看到"候选列表怎么一直是这几条"，而且查不出为什么。 */
 async function writeStore(st) {
-  const clean = {
-    items: (st.items || []).slice(0, HISTORY_MAX),
-    stats: st.stats || {}
-  };
-  try {
-    await chrome.storage.session.set({ [HISTORY_KEY]: clean });
-  } catch (e) { /* 忽略 */ }
-  return clean;
+  const items = (st.items || []).slice(0, HISTORY_MAX);
+  const stats = st.stats || {};
+
+  /* 阶梯去重：items 本来就少于 4 条时，别重复试同样的大小 */
+  const sizes = [];
+  [items.length, 2, 1, 0].forEach((n) => {
+    if (n <= items.length && sizes.indexOf(n) === -1) sizes.push(n);
+  });
+
+  for (let i = 0; i < sizes.length; i++) {
+    const n = sizes[i];
+    const cut = { items: items.slice(0, n), stats: n ? stats : {} };
+    try {
+      await chrome.storage.session.set({ [HISTORY_KEY]: cut });
+      /* 全量写成功就把上次那句话清掉，免得旧提示一直挂着 */
+      if (n === sizes[0]) storeWarn = '';
+      else if (n === 0) storeWarn = '历史写不进去了（浏览器存储配额已满），这次没留下候选。';
+      else storeWarn = '历史太长，只留了最近 ' + n + ' 条。';
+      return cut;
+    } catch (e) { /* 降到下一级再试 */ }
+  }
+
+  storeWarn = '历史写不进去了（浏览器存储配额已满），这次没留下候选。';
+  return { items: [], stats: {} };
 }
 
 /* ⚠️ 所有"读-改-写"必须排队串行执行。
@@ -176,7 +232,12 @@ function editStore(fn) {
   const run = storeChain.then(async () => {
     const st = await readStore();
     const out = await fn(st);
-    await writeStore(st);
+    const wrote = await writeStore(st);
+    /* writeStore 可能因为配额被迫砍短。那种情况下以"真正写进去的"为准 ——
+       否则这一轮会多报一条候选：点得动、但下次刷新就没了。 */
+    if (Array.isArray(out) && Array.isArray(wrote.items) && wrote.items.length < out.length) {
+      return wrote.items;
+    }
     return out;
   });
   /* 某一次失败不能把后面排队的全掐断 */
@@ -194,6 +255,19 @@ async function pushHistory(text, how) {
   const t = String(text == null ? '' : text).trim();
   const src = String(how || '').trim() || '剪贴板';
 
+  /* 太大就不进历史（防线①）。留一句说明 —— 否则你会以为"复制没生效"。
+
+     真实撞线场景不是"4 张 2MB 截图"（图片压根不进历史），而是一条超大文本：
+     比如从地址栏复制一个 data:image/png;base64,… 地址，那串是纯文本、几 MB，
+     正好从后门绕过"图片不进历史"那道墙。一条超 10MB 就能让整次写入作废。 */
+  if (t && byteLen(t) > STORE_ITEM_MAX) {
+    storeSkip = '这次的内容太大（' + Math.round(byteLen(t) / 1024) +
+      ' KB），没进候选历史；发送不受影响。';
+    /* 只读也走同一条串行链，拿到的是排到队后的状态，不会读到写一半的数据 */
+    return await editStore((st) => st.items);
+  }
+
+  storeSkip = '';
   return await editStore((st) => {
     if (!t) return st.items;
     if (st.items[0] !== t) {
@@ -221,6 +295,7 @@ async function probePage(tabId) {
       func: async () => {
         const out = {
           selection: '', title: '', url: '',
+          selAt: 0, imgCopyAt: 0,
           clipOk: false, clipText: '', clipError: '', clipKinds: [], clipImage: null,
           where: '页面'
         };
@@ -231,6 +306,11 @@ async function probePage(tabId) {
           ).trim();
         } catch (e) { /* 忽略 */ }
 
+        /* v1.0.2：两个时刻由 content.js 记录（同一个 isolated world）。
+           拿不到（受限页面、页面还没注入 content.js）就是 0。 */
+        try { out.selAt = Number(window.__qqSendSelAt) || 0; } catch (e) { /* 忽略 */ }
+        try { out.imgCopyAt = Number(window.__qqSendImgCopyAt) || 0; } catch (e) { /* 忽略 */ }
+
         out.title = document.title || '';
         out.url = location.href || '';
 
@@ -238,6 +318,16 @@ async function probePage(tabId) {
         try { focused = !!document.hasFocus(); } catch (e) { /* 忽略 */ }
         if (!focused) {
           out.clipError = '页面当前没有焦点';
+          return out;
+        }
+
+        /* v1.0.3：站点用 Permissions-Policy 关掉了 clipboard-read 就先别叫
+           （reverso.net 就是）。这条报错由**浏览器自己打印**，不是 Promise
+           的 rejection，catch 不住 —— 会在扩展的错误页里刷一条红字。
+           判断用的是 content.js 那同一份（imageutil.js 提供）。 */
+        if (typeof qqImg !== 'undefined' && qqImg && qqImg.clipReadAllowed
+            && !qqImg.clipReadAllowed()) {
+          out.clipError = '这个页面禁止读取剪贴板';
           return out;
         }
 
@@ -463,18 +553,51 @@ async function resolveContent(providedClip) {
   const list = [];
   let note = '';
 
-  if (!restricted && probe.selection) {
-    /* 页面上还有选中时它优先于剪贴板 —— 弹窗会照实标出"来自选中文字"，
-       这样即使和你以为的不一样，你也能在列表里看见。 */
-    list.push({ kind: 'text', text: String(probe.selection).trim(), source: '选中文字' });
-  } else if (clip.text) {
+  const selText = (!restricted && probe.selection) ? String(probe.selection).trim() : '';
+  const clipImage = clip.image || null;
+
+  /* ---------------------------------------------- v1.0.2：谁当"将要发送"
+
+     剪贴板里是图片、页面上又留着选中文字时，判据是**谁更新**，而不是
+     "谁存在"。因为页面上的选中状态是个持续状态：你右键复制完那段文字
+     后，高亮不会自己消失，于是它会一直把之后复制的图片挤掉 —— 这正是
+     木木报的「再复制一次图片，弹窗里没有缩略图」。
+
+     两个时刻都由 content.js 在页面里记（selectionchange / copy 事件）：
+       · 选中文字比"复制图片"更晚 → 你刚选了字，发选中文字
+       · 否则（含"压根没观察到复制图片这个动作"）→ 发图片
+     后一种兜底是故意的：剪贴板里冒出图片，本身就说明你刚复制了一张图。 */
+  const selAt = Number(probe.selAt) || 0;
+  const imgCopyAt = Number(probe.imgCopyAt) || 0;
+  const selIsNewer = !!(selAt > 0 && imgCopyAt > 0 && selAt > imgCopyAt);
+  const imageWins = !!clipImage && !selIsNewer;
+
+  if (imageWins) {
+    /* 图片只作为"本次要发的那一条"出现，不落进历史（理由见文件头：
+       storage.session 只有 10MB，而 base64 要膨胀 4/3）。 */
+    list.push({ kind: 'image', image: clipImage, source: '剪贴板图片' });
+  }
+
+  if (selText) {
+    list.push({ kind: 'text', text: selText, source: '选中文字' });
+  }
+
+  /* 图片没赢的时候（选中文字更晚）它仍然要进候选 —— 否则看起来就像
+     "扩展又读不到图了"。两条都在列表里，点一下就能换。 */
+  if (!list.length && clipImage) {
+    list.push({ kind: 'image', image: clipImage, source: '剪贴板图片' });
+  }
+
+  if (!list.length && clip.text) {
     list.push({ kind: 'text', text: clip.text, source: '剪贴板' });
-  } else if (clip.image) {
-    /* 1.0.1：剪贴板里没有文字、但有图片 —— 这一次要发的就是图片。
-       图片只作为"本次要发的那一条"出现，不落进历史（理由见文件头：
-       10MB 配额扛不住 base64）。 */
-    list.push({ kind: 'image', image: clip.image, source: '剪贴板图片' });
-  } else if (!restricted && (probe.title || probe.url)) {
+  }
+
+  if (clipImage && selText) {
+    note = '剪贴板里是一张图片，页面上还留着一处选中文字 —— 两条都列在候选里，' +
+      '现在默认发' + (imageWins ? '图片' : '选中文字') + '，点另一条就能改。';
+  }
+
+  if (!list.length && !restricted && (probe.title || probe.url)) {
     const parts = [];
     if (probe.title) parts.push(probe.title);
     if (probe.url) parts.push(probe.url);
@@ -524,9 +647,17 @@ async function resolveContent(providedClip) {
   }
 
   /* 每一项配一把稳定的钥匙，弹窗改选时用它精确指认"我要发这一条"。
-     文字用内容本身当钥匙（和旧版一致），图片固定是 'i:0' —— 图片只会
-     出现在 list[0] 这一个位置。 */
-  list.forEach((x, i) => { x.key = (x.kind === 'image') ? ('i:' + i) : ('t:' + x.text); });
+     文字用内容本身当钥匙（和旧版一致）；图片用「体积 + 宽高」——1.0.1
+     是按位置算的（'i:0'），但 v1.0.2 起图片可能排在选中文字后面，
+     位置不再稳定，照位置算会在"预览"和"发送"两次解析之间错位。 */
+  list.forEach((x) => {
+    if (x.kind === 'image') {
+      const im = x.image || {};
+      x.key = 'i:' + (im.bytes || 0) + '_' + (im.width || 0) + 'x' + (im.height || 0);
+    } else {
+      x.key = 't:' + x.text;
+    }
+  });
 
   return { ok: true, list: list, note: note, restricted: false };
 }
@@ -813,7 +944,8 @@ async function getPreview(providedClip) {
       list: [],
       note: '',
       max: HISTORY_MAX,
-      stats: {}
+      stats: {},
+      storeWarn: storeNotice()
     };
   }
 
@@ -825,7 +957,9 @@ async function getPreview(providedClip) {
     /* 上限，供弹窗在"没凑满"时说明原因 */
     max: HISTORY_MAX,
     /* 每一路来源各记下了几条 —— 弹窗底部会用一行小字显示 */
-    stats: (await readStore()).stats
+    stats: (await readStore()).stats,
+    /* 历史被挡下/降级时的一句话。正常情况下是空串，弹窗不显示。 */
+    storeWarn: storeNotice()
   };
 }
 
@@ -929,7 +1063,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'get-preview') {
     getPreview(msg.clipboard).then(sendResponse).catch((e) => {
-      sendResponse({ ok: false, reason: String(e), detail: '', restricted: false, list: [], note: '', max: HISTORY_MAX, stats: {} });
+      sendResponse({ ok: false, reason: String(e), detail: '', restricted: false, list: [], note: '', max: HISTORY_MAX, stats: {}, storeWarn: storeNotice() });
     });
     return true;
   }

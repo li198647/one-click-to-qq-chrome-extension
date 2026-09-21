@@ -51,13 +51,24 @@ $extPkgName = "one-click-to-qq-extension-v$ver"
 $kitPkgName = "one-click-to-qq-kit-v$ver"
 $guideInZip = "!安装说明-先看这个.txt"     # ! 让它排在解压后目录的最上面
 
+# 说明文件里的版本号不写死，用 {{VER}} 占位，这里按 manifest 现填。
+# 为什么不用"把所有 vX.Y.Z 都替换掉"那种粗暴做法：说明里有一句
+# 「发图片（v1.0.1 起）」—— 那是**历史事实**，替换掉就变成假的。
+function Copy-Guide($srcPath, $destPath) {
+  $t = Get-Content -LiteralPath $srcPath -Raw -Encoding UTF8
+  $t = $t.Replace("{{VER}}", $ver)
+  if ($t.Contains("{{VER}}")) { throw ("说明文件里还有没填上的占位符：" + $srcPath) }
+  # 保持和源文件一致：UTF-8 不带 BOM
+  [System.IO.File]::WriteAllText($destPath, $t, (New-Object System.Text.UTF8Encoding $false))
+}
+
 # ---------------------------------------------------------------- 扩展包
 Say ""
 Say "=== 组装扩展包 ==="
 $d1 = Join-Path $stage $extPkgName
 New-Item -ItemType Directory -Path $d1 -Force | Out-Null
 Copy-Item -Path (Join-Path $extDir "*") -Destination $d1 -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $pkgDir "扩展版-安装说明.txt") -Destination (Join-Path $d1 $guideInZip) -Force
+Copy-Guide (Join-Path $pkgDir "扩展版-安装说明.txt") (Join-Path $d1 $guideInZip)
 Get-ChildItem $d1 -Recurse -File | ForEach-Object { Say ("  " + $_.FullName.Replace($stage, "") + "  " + $_.Length) }
 
 $zip1 = Join-Path $distDir "$extPkgName.zip"
@@ -78,7 +89,7 @@ foreach ($f in $kitFiles) {
   Copy-Item -LiteralPath (Join-Path $brDir $f) -Destination (Join-Path $d2 "bridge") -Force
 }
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $d2 -Force
-Copy-Item -LiteralPath (Join-Path $pkgDir "完整版-安装说明.txt") -Destination (Join-Path $d2 $guideInZip) -Force
+Copy-Guide (Join-Path $pkgDir "完整版-安装说明.txt") (Join-Path $d2 $guideInZip)
 Get-ChildItem $d2 -Recurse -File | ForEach-Object { Say ("  " + $_.FullName.Replace($stage, "") + "  " + $_.Length) }
 
 $zip2 = Join-Path $distDir "$kitPkgName.zip"
@@ -167,6 +178,26 @@ foreach ($z in @($zip1, $zip2)) {
     $fail = $true
   } else {
     Say ("  [OK]   扩展 " + $need.Count + " 个必需文件齐全（含 4 个尺寸图标）")
+  }
+
+  # ④ 包里的安装说明必须写着当前版本
+  # 以前版本号在说明文件里是写死的，每次发版都得手改、漏了就会让包里的说明书
+  # 指着一个不存在的 zip 名。现在改成 {{VER}} 占位符，这道检查保证它真被填上了。
+  $guide = Join-Path $dest (Join-Path $topName $guideInZip)
+  if (-not (Test-Path -LiteralPath $guide)) {
+    Say "  [FAIL] 包里找不到安装说明"
+    $fail = $true
+  } else {
+    $gt = Get-Content -LiteralPath $guide -Raw -Encoding UTF8
+    if ($gt.Contains("{{VER}}")) {
+      Say "  [FAIL] 安装说明里还有没填上的占位符"
+      $fail = $true
+    } elseif ($gt -notmatch ("v" + [regex]::Escape($ver))) {
+      Say ("  [FAIL] 安装说明里没写当前版本 v" + $ver)
+      $fail = $true
+    } else {
+      Say ("  [OK]   安装说明版本号 = v" + $ver)
+    }
   }
 }
 

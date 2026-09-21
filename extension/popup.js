@@ -85,7 +85,7 @@ const SRC_LABEL = {
   '剪贴板': '其它'
 };
 
-function renderDiag(stats) {
+function renderDiag(stats, storeWarn) {
   const parts = [];
   Object.keys(stats || {}).forEach(function (k) {
     const n = Number(stats[k]) || 0;
@@ -95,6 +95,15 @@ function renderDiag(stats) {
   const ver = 'v' + chrome.runtime.getManifest().version;
   diag.textContent = (parts.length ? '记录来源：' + parts.join(' · ') : '记录来源：还没有')
     + '　·　' + ver;
+
+  /* 历史被挡下或写入降级时补一行红字。正常情况下是空串，这行就不出现。
+     这一行的存在本身就是防线②的目的：把原来被空 catch 吞掉的事说出来。 */
+  if (storeWarn) {
+    const w = document.createElement('span');
+    w.className = 'diagWarn';
+    w.textContent = '注意 · ' + storeWarn;
+    diag.appendChild(w);
+  }
 }
 
 /* ---------------------------------------------- 图片那一行的说明文字 */
@@ -270,6 +279,11 @@ async function readClipboardHere() {
     where: '弹窗'
   };
 
+  /* ⚠️ 这里刻意**不**做 Permissions-Policy 判断（`qqImg.clipReadAllowed`）。
+     受站点策略管的是 content script 和注入到页面里的探针 —— 它们是"住在
+     别人家"的文档；弹窗是扩展自己的页面（chrome-extension://），策略由我们
+     自己的 manifest 决定，不受当前网站影响。在这一处多拦一道只会多一个
+     "误判成读不了"的风险，而它偏偏是唯一可靠能读到剪贴板的那条路。 */
   if (!navigator.clipboard || !navigator.clipboard.readText) {
     out.clipError = '这个浏览器环境不支持读取剪贴板';
     return out;
@@ -369,13 +383,13 @@ async function refreshPreview() {
     sbText.style.display = 'none';
     clearThumb();
     sendBtn.disabled = true;
-    renderDiag((r && r.stats) || {});
+    renderDiag((r && r.stats) || {}, (r && r.storeWarn) || '');
     return;
   }
 
   cands = Array.isArray(r.list) ? r.list : [];
   noteText = r.note || '';
-  renderDiag(r.stats || {});
+  renderDiag(r.stats || {}, r.storeWarn || '');
 
   if (!cands.length) {
     sendBox.className = 'sendbox err';

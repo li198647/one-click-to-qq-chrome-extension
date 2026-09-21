@@ -16,7 +16,8 @@
    ③ 这个文件同时出现在三处，任何一处不能用的语法都会拖垮另外两处，
       所以刻意保持保守写法（不写 import / export / 可选链）。
 
-   它只做三件事：认格式、blob 转 dataURL、读出宽高。
+   它做四件事：认格式、blob 转 dataURL、读出宽高、判断当前文档能不能
+   读剪贴板（v1.0.3 加的最后一件，见文件末尾）。
    「超 20MB 缩尺寸」和「格式被拒就转 PNG 重试」都放在桥那边用 Pillow
    做 —— 那边一行的事，扩展这边不重复实现，也就不会两边行为不一致。
    ============================================================ */
@@ -144,6 +145,37 @@
     })();
   }
 
+  /* ---------------------------------------------- ① 能不能读剪贴板
+
+     v1.0.3。有些站点用 Permissions-Policy 把 clipboard-read 关掉了
+     （reverso.net 就是），此时调用 navigator.clipboard.readText() 会被
+     浏览器拒绝，并在扩展的错误页里刷一条：
+
+       Permissions policy violation: The Clipboard API has been blocked
+       because of a permissions policy applied to the current document.
+
+     要命的是这条报错**由浏览器自己打印**，不是 Promise 的 rejection ——
+     try/catch 接不住它。所以唯一干净的解法是"先问策略、再决定叫不叫"。
+
+     document.featurePolicy 是旧名，Chrome 后来改叫 document.permissionsPolicy，
+     两个都探。问不出来（老 Chrome、service worker 里没有 document）就
+     返回 true 按允许处理 —— 外层本来还有 try/catch 兜底，宁可多试一次，
+     也别把一个本来能用的页面误判成不能用。
+
+     为什么放在这个文件里：它是唯一被 service worker / 弹窗 / 网页三处
+     都加载的文件。content.js 和 background.js 需要同一份判断，各写一遍
+     迟早会走偏。 */
+  function clipReadAllowed() {
+    try {
+      if (typeof document === 'undefined') return true;
+      var fp = document.permissionsPolicy || document.featurePolicy;
+      if (!fp || typeof fp.allowsFeature !== 'function') return true;
+      return fp.allowsFeature('clipboard-read') !== false;
+    } catch (e) {
+      return true;
+    }
+  }
+
   g.qqImg = {
     isImageMime: isImageMime,
     extFor: extFor,
@@ -152,6 +184,7 @@
     parseDataUrl: parseDataUrl,
     humanSize: humanSize,
     prepareImage: prepareImage,
-    pickImageFromClipItems: pickImageFromClipItems
+    pickImageFromClipItems: pickImageFromClipItems,
+    clipReadAllowed: clipReadAllowed
   };
 })(typeof self !== 'undefined' ? self : this);

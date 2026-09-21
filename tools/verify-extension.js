@@ -160,8 +160,8 @@ check('图片不进候选历史（历史只收文字）',
   /const t = String\(text == null \? '' : text\)\.trim\(\);/.test(bg));
 
 check('候选项带 kind 与 key 字段',
-  /list\.push\(\{ kind: 'image', image: clip\.image/.test(bg) &&
-  /x\.key = \(x\.kind === 'image'\)/.test(bg));
+  /list\.push\(\{ kind: 'image', image: clipImage/.test(bg) &&
+  /x\.key = 'i:' \+ \(im\.bytes \|\| 0\)/.test(bg));
 
 check('发送按 key 精确匹配（图片没有"原文"可比对）',
   /r\.list\.find\(\(x\) => x\.key === want\)/.test(bg) &&
@@ -178,9 +178,74 @@ check('右键菜单只对图片出现，且由扩展后台自己下载',
 check('取不到图时明确报错（不静默换别的内容发）',
   /这张图片取不到/.test(bg) && /复制图片/.test(bg));
 
-check('剪贴板同时有图和文字时仍发文字（老行为不破）',
-  /else if \(clip\.text\)/.test(bg) &&
-  bg.indexOf('else if (clip.text)') < bg.indexOf('else if (clip.image)'));
+/* 两条取值链都是"读到文字就不去取图"（取图代码写在 if (!out.clipText) 块里），
+   所以 clip.text 与 clip.image 不会同时非空 —— 「同时有图和文字时发文字」
+   这条老规矩靠它保证。 */
+check('剪贴板里有文字时就不取图（文字优先，老行为不破）',
+  /if \(!out\.clipText\) \{[\s\S]{0,1200}pickImageFromClipItems/.test(bg) &&
+  /if \(!out\.clipText\) \{[\s\S]{0,1200}pickImageFromClipItems/.test(popup));
+
+/* ---------- 3e. 残留选中文字挤掉图片（v1.0.2 修的 bug） ----------
+
+   现象：复制图片 → 复制一段文字 → 再复制图片，第三次弹窗里没有缩略图。
+   根因：probe.selection 是个"持续状态"，复制完文字后高亮还在，于是
+   resolveContent 里"选中文字优先"那条分支把图片整个跳过了。
+   修法：判据从"谁存在"改成"谁更新"（selectionchange / copy 两个时刻）。 */
+check('content: 记录选中文字变化的时刻',
+  /__qqSendSelAt/.test(content) && /'selectionchange'/.test(content));
+
+check('content: 记录"复制到的是一张图"的时刻',
+  /__qqSendImgCopyAt/.test(content) && /indexOf\('image\/'\) === 0/.test(content));
+
+check('content: 复制图片时作废选中文字的时刻',
+  /__qqSendImgCopyAt = Date\.now\(\);/.test(content) &&
+  /__qqSendSelAt = 0;/.test(content));
+
+check('probePage 把两个时刻带回后台',
+  /out\.selAt = Number\(window\.__qqSendSelAt\)/.test(bg) &&
+  /out\.imgCopyAt = Number\(window\.__qqSendImgCopyAt\)/.test(bg));
+
+check('resolveContent 按"谁更新"判断，而不是"谁存在"',
+  /const selIsNewer = !!\(selAt > 0 && imgCopyAt > 0 && selAt > imgCopyAt\)/.test(bg) &&
+  /const imageWins = !!clipImage && !selIsNewer/.test(bg));
+
+check('图片没赢时仍进候选（不至于看起来像"读不到图"）',
+  /if \(!list\.length && clipImage\)/.test(bg) &&
+  /页面上还留着一处选中文字/.test(bg));
+
+check('图片的 key 不再按位置算（位置已不稳定）',
+  /'i:' \+ \(im\.bytes \|\| 0\) \+ '_' \+ \(im\.width \|\| 0\)/.test(bg) &&
+  !/'i:' \+ i/.test(bg));
+
+/* 判定表：直接把 background.js 里那几行判定式**原样取出来**跑（不是另
+   抄一遍），所以这里测的就是真实代码。四种组合都必须对。 */
+let imgWinsFn = null;
+try {
+  const seg = bg.match(
+    /const selAt = Number\(probe\.selAt\) \|\| 0;[\s\S]*?const imageWins = !!clipImage && !selIsNewer;/
+  );
+  if (seg) imgWinsFn = new Function('probe', 'clipImage', seg[0] + '\nreturn imageWins;');
+} catch (e) { imgWinsFn = null; }
+
+function winOf(probe, clipImage) {
+  if (!imgWinsFn) return null;
+  try { return imgWinsFn(probe, clipImage); } catch (e) { return null; }
+}
+
+const IMG = { bytes: 2048, width: 100, height: 80 };
+check('判定表：复制图片比选中文字更晚 → 发图片（木木报的那个 bug）',
+  winOf({ selAt: 100, imgCopyAt: 500 }, IMG) === true);
+
+check('判定表：没观察到"复制图片"这个动作 → 仍发图片（剪贴板里有图就是刚复制过）',
+  winOf({ selAt: 500, imgCopyAt: 0 }, IMG) === true &&
+  winOf({ selAt: 0, imgCopyAt: 0 }, IMG) === true);
+
+check('判定表：选中文字更晚 → 发选中文字（不误发旧图）',
+  winOf({ selAt: 500, imgCopyAt: 100 }, IMG) === false);
+
+check('判定表：剪贴板里没有图片 → 永远是文字那条路',
+  winOf({ selAt: 500, imgCopyAt: 0 }, null) === false &&
+  winOf({ selAt: 0, imgCopyAt: 0 }, null) === false);
 
 /* 那个"特别标记"：候选行的小徽标 + 发送框的真缩略图 */
 check('popup: 候选行有图片徽标（内联 SVG，不引外部图片文件）',
@@ -262,10 +327,69 @@ check('桥: 超 20MB 缩尺寸，且只降分辨率不换格式',
   /SHRINK_STEPS/.test(bridge) && /Image\.LANCZOS/.test(bridge));
 check('桥: 原格式被拒时转 PNG 重试一次', /def to_png/.test(bridge) && /转成 PNG 重试一次/.test(bridge));
 check('桥: 请求体上限已放开（aiohttp 默认 1MB 会把图片挡成 413）',
-  /client_max_size=256 \* 1024 \* 1024/.test(bridge));
+  /MAX_BODY_BYTES = 256 \* 1024 \* 1024/.test(bridge) &&
+  /client_max_size=MAX_BODY_BYTES/.test(bridge));
 check('桥: 自己取 access_token 并缓存（不碰 botpy 私有结构）',
   /async def get_access_token/.test(bridge) && /_TOKEN\["expire_at"\]/.test(bridge));
 check('桥: 版本号 1.0.1', /^VERSION = "1\.0\.1"$/m.test(bridge));
+
+/* ---------- v1.0.2：storage.session 配额防线（两道） ---------- */
+
+check('配额①: 单条上限存在，且是 512KB',
+  /const STORE_ITEM_MAX = 512 \* 1024;/.test(bg));
+check('配额①: 按 UTF-8 字节数判定（中文一个字 3 字节，.length 会低估三倍）',
+  /function byteLen\(s\)/.test(bg) && /new TextEncoder\(\)\.encode\(t\)\.length/.test(bg));
+check('配额①: 超限内容不进历史，但既有候选照常返回（发送不受影响）',
+  /if \(t && byteLen\(t\) > STORE_ITEM_MAX\)/.test(bg) &&
+  /return await editStore\(\(st\) => st\.items\);/.test(bg));
+check('配额②: 写入失败逐级退让（4 → 2 → 1 → 空），不再是空 catch 吞掉',
+  /\[items\.length, 2, 1, 0\]/.test(bg) && /降到下一级再试/.test(bg));
+check('配额②: 老那套「set 失败就当没事」已经不存在',
+  !/await chrome\.storage\.session\.set\(\{ \[HISTORY_KEY\]: clean \}\)/.test(bg));
+check('配额②: 退让后以「真正写进去的」为准，不多报一条点得动却没留住的候选',
+  /wrote\.items\.length < out\.length/.test(bg));
+check('配额②: 提示随 get-preview 带回弹窗（两个返回分支都带）',
+  (bg.match(/storeWarn: storeNotice\(\)/g) || []).length >= 2 &&
+  /function storeNotice\(\)/.test(bg));
+check('弹窗: 底部那行能显示提示，红字且单独一行',
+  /function renderDiag\(stats, storeWarn\)/.test(popup) &&
+  /\.diagWarn \{ display: block/.test(html) &&
+  /w\.className = 'diagWarn'/.test(popup));
+check('弹窗: 两处 renderDiag 调用都传了 storeWarn',
+  /renderDiag\(\(r && r\.stats\) \|\| \{\}, \(r && r\.storeWarn\) \|\| ''\)/.test(popup) &&
+  /renderDiag\(r\.stats \|\| \{\}, r\.storeWarn \|\| ''\)/.test(popup));
+
+
+/* ---------- v1.0.3：Permissions-Policy 剪贴板守卫 ----------
+
+   reverso.net 上报「Permissions policy violation: The Clipboard API has
+   been blocked because of a permissions policy applied to the current
+   document.」那条错误由**浏览器自己打印**，不是 Promise 的 rejection，
+   try/catch 接不住 —— 只能"先问策略、再决定叫不叫"。
+   行为在 tools/test_clip_policy.js 里实测（切真源码跑），这里钉结构。 */
+
+check('守卫: imageutil.js 导出 clipReadAllowed（丢了会静默退回"一律放行"）',
+  /clipReadAllowed:\s*clipReadAllowed/.test(img));
+check('守卫: 同时探 permissionsPolicy 与旧名 featurePolicy',
+  /document\.permissionsPolicy \|\| document\.featurePolicy/.test(img) &&
+  /allowsFeature\('clipboard-read'\) !== false/.test(img));
+check('守卫: 问不出来一律放行（老 Chrome / service worker 里没有 document）',
+  /typeof document === 'undefined'\) return true/.test(img));
+check('守卫: content.js 的 canRead 里带这道岗（页面轮询的唯一入口）',
+  /return qqImg\.clipReadAllowed\(\);/.test(content));
+check('守卫: background.js 注入页面的探针里也带这道岗',
+  /!qqImg\.clipReadAllowed\(\)/.test(bg));
+check('守卫: 弹窗刻意**不**设这道岗（它不受站点策略管，误拦代价最大）',
+  popup.replace(/\/\*[\s\S]*?\*\//g, '').indexOf('clipReadAllowed') === -1 &&
+  /navigator\.clipboard\.readText/.test(popup));
+check('守卫: 页面侧读不到时把原因写进 clipError（走原有报错路径，不新增静默）',
+  /out\.clipError = '这个页面禁止读取剪贴板'/.test(bg));
+check('守卫: 自愈 —— 真被策略拒过一次就永久闭嘴（轮询 2 秒一轮，否则红字刷屏）',
+  /var policyBlocked = false;/.test(content) &&
+  (content.match(/policyBlocked = true/g) || []).length >= 2 &&
+  /if \(policyBlocked\) return false;/.test(content));
+check('守卫: 自愈只认"策略"字样（偶发的 Document is not focused 不能被永久关掉）',
+  /permissions\? policy\|feature policy\|disabled in this document/.test(content));
 
 /* ---------- 输出 ---------- */
 out.push('');
