@@ -1,6 +1,8 @@
 @echo off
 chcp 65001 >nul
-title QQ Bridge - local relay for browser clipboard
+rem Fallback title only -- qq_bridge.py replaces it with a Chinese one
+rem (SetConsoleTitleW). Keep this file pure ASCII: cmd reads .bat as OEM 936.
+title QQ Bridge
 cd /d "%~dp0"
 
 set "PY=C:\Users\Administrator\.workbuddy\binaries\python\envs\default\Scripts\python.exe"

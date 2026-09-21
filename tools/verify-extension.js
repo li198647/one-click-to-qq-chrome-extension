@@ -15,10 +15,12 @@ const root = path.resolve(__dirname, '..');
 const ext = path.join(root, 'extension');
 const out = [];
 const bad = [];
+let passed = 0;
 
 function check(name, ok, extra) {
+  if (ok) passed += 1;
+  else bad.push(name);
   out.push((ok ? '[OK]   ' : '[FAIL] ') + name + (extra ? ' — ' + extra : ''));
-  if (!ok) bad.push(name);
 }
 
 /* ---------- 1. 四个 JS 的语法 ---------- */
@@ -332,7 +334,7 @@ check('桥: 请求体上限已放开（aiohttp 默认 1MB 会把图片挡成 413
   /client_max_size=MAX_BODY_BYTES/.test(bridge));
 check('桥: 自己取 access_token 并缓存（不碰 botpy 私有结构）',
   /async def get_access_token/.test(bridge) && /_TOKEN\["expire_at"\]/.test(bridge));
-check('桥: 版本号 1.0.4（启动时自登记那一版）', /^VERSION = "1\.0\.4"$/m.test(bridge));
+check('桥: 版本号是 x.y.z 形式', /^VERSION = "\d+\.\d+\.\d+"$/m.test(bridge));
 
 /* ---------- v1.0.2：storage.session 配额防线（两道） ---------- */
 
@@ -403,7 +405,7 @@ check('守卫: 自愈只认"策略"字样（偶发的 Document is not focused �
    （含：中文路径穿过 cmd、stdout 零多余字节、窗口最小化、宿主被回收后
    桥仍活着）。这里只钉结构，防"哪天顺手删了某一段没人发现"。 */
 
-check('v1.0.4: manifest 版本 1.0.4', !!m && m.version === '1.0.4', m ? m.version : '');
+check('v1.0.4: manifest 版本是 x.y.z 形式', !!m && /^\d+\.\d+\.\d+$/.test(m.version), m ? m.version : '');
 check('v1.0.4: manifest 声明 nativeMessaging 权限', !!m &&
   Array.isArray(m.permissions) && m.permissions.indexOf('nativeMessaging') >= 0,
   m ? (m.permissions || []).join(',') : '');
@@ -414,6 +416,10 @@ let hostBatBuf = null;
 try { hostBatBuf = fs.readFileSync(path.join(root, 'bridge', 'qq_host.bat')); } catch (e) { /* 忽略 */ }
 let reRegBuf = null;
 try { reRegBuf = fs.readFileSync(path.join(root, 'bridge', '重新登记.bat')); } catch (e) { /* 忽略 */ }
+let startBatBuf = null;
+try { startBatBuf = fs.readFileSync(path.join(root, 'bridge', 'start_bridge.bat')); } catch (e) { /* 忽略 */ }
+let bridgePy = '';
+try { bridgePy = fs.readFileSync(path.join(root, 'bridge', 'qq_bridge.py'), 'utf8'); } catch (e) { /* 忽略 */ }
 
 check('v1.0.4: 三个新文件都在（宿主逻辑 / 宿主入口 / 兜底登记）',
   !!host && !!hostBatBuf && !!reRegBuf);
@@ -431,6 +437,42 @@ check('v1.0.4: 重新登记.bat 纯 ASCII 且 CRLF',
    宿主入口的 stdout 就是 Chrome 的消息管道，多一个字节整个协议就废了。 */
 check('v1.0.4: qq_host.bat 的 chcp 带 >nul（stdout 一个字节都不能多）',
   !!hostBatBuf && hostBatBuf.toString('latin1').toLowerCase().indexOf('chcp 65001 >nul') >= 0);
+
+/* ---------- 窗口标题（v1.0.5） ----------
+   标题要中文，但**不能**交给 start_bridge.bat 的 `title` 去做 ——
+   批处理是按 OEM 代码页读盘解析的，往里写中文等于赌代码页。
+   所以标题一律由 Python 用 SetConsoleTitleW 设（UTF-16，与代码页无关）。 */
+check('v1.0.5: start_bridge.bat 同样保持纯 ASCII 且 CRLF（中文标题不能放这儿）',
+  !!startBatBuf && startBatBuf.every((b) => b < 128) &&
+  startBatBuf.filter((b) => b === 10).length === startBatBuf.filter((b) => b === 13).length &&
+  startBatBuf.filter((b) => b === 10).length > 0);
+check('v1.0.5: 中文标题走的是 SetConsoleTitleW（宽字符 API），不是 bat 的 title',
+  /SetConsoleTitleW/.test(bridgePy) &&
+  /CONSOLE_TITLE = "[^"]*[\u4e00-\u9fa5][^"]*"/.test(bridgePy) &&
+  !!startBatBuf && !/local relay/.test(startBatBuf.toString('latin1')));
+check('v1.0.5: 标题够短，不会被标题栏截断（实测 21 字，含标点）',
+  (() => {
+    const m = bridgePy.match(/CONSOLE_TITLE = "([^"]*)"/);
+    return !!m && m[1].length > 0 && m[1].length <= 32;
+  })());
+check('v1.0.5: 没有控制台（pythonw / 被重定向）时设标题不抛异常',
+  /def set_console_title[\s\S]{0,600}?try:[\s\S]{0,300}?except Exception:[\s\S]{0,80}?return False/.test(bridgePy));
+
+/* 版本号不再钉死字面量 —— 真正常见的错是"改了 manifest 忘了改桥 / 宿主"，
+   钉死字面量只能证明"我这次手动改对了"。改成三处必须互相对齐。 */
+check('v1.0.5: manifest / 桥 / 宿主 三处版本号一致',
+  (() => {
+    const mb = bridgePy.match(/^VERSION = "([^"]+)"/m);
+    const mh = host.match(/^VERSION = "([^"]+)"/m);
+    if (!m || !mb || !mh) return false;
+    return m.version === mb[1] && m.version === mh[1];
+  })(),
+  (() => {
+    const mb = bridgePy.match(/^VERSION = "([^"]+)"/m);
+    const mh = host.match(/^VERSION = "([^"]+)"/m);
+    return 'manifest=' + (m ? m.version : '?') +
+      ' 桥=' + (mb ? mb[1] : '?') + ' 宿主=' + (mh ? mh[1] : '?');
+  })());
 
 check('v1.0.4: 宿主按官方协议读 4 字节小端长度', /struct\.unpack\("<I", head\)/.test(host));
 check('v1.0.4: 宿主回复也带 4 字节长度前缀', /struct\.pack\("<I", len\(payload\)\)/.test(host));
@@ -538,7 +580,12 @@ check('v1.0.4: 三处"连不上桥"的提示都提到了新按钮',
   /点右边的「启动本地桥」/.test(popup));
 
 /* ---------- 输出 ---------- */
+// 总数一定要打出来：README 里引用的项数全靠它对账，
+// 以前只打「全部通过」，项数一度写漂成 135（实际 136）。
+const total = passed + bad.length;
 out.push('');
-out.push(bad.length ? ('❌ 有 ' + bad.length + ' 项没过：' + bad.join(' / ')) : '✅ 全部通过');
+out.push(bad.length
+  ? ('❌ 共 ' + total + ' 项，' + bad.length + ' 项没过：' + bad.join(' / '))
+  : ('✅ 共 ' + total + ' 项，全部通过'));
 fs.writeFileSync(path.join(root, 'tools', 'verify-extension.txt'), out.join('\n'), 'utf8');
 console.log(out.join('\n'));

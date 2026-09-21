@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-QQ 转发助手 · Native Messaging 宿主  v1.0.4
+QQ 转发助手 · Native Messaging 宿主  v1.0.5
 
 这个文件只有一个职责：让浏览器扩展能"喊一声"就把本地桥拉起来。
 
@@ -64,7 +64,7 @@ CONFIG_PATH = os.path.join(BASE, "config.json")
 LOG_DIR = os.path.join(BASE, "log")
 HOST_LOG = os.path.join(LOG_DIR, "native_host.log")
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 DEFAULT_PORT = 18761
 MAX_MSG = 1024 * 1024
 

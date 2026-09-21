@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-QQ 转发助手 · 本地桥程序  v1.0.4
+QQ 转发助手 · 本地桥程序  v1.0.5
 
 职责：
   1. 用官方 SDK 连上 QQ 机器人（WebSocket，不需要公网 IP、不需要备案域名）
@@ -44,7 +44,7 @@ LOG_DIR = os.path.join(BASE, "log")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_PATH = os.path.join(LOG_DIR, "bridge_%s.log" % datetime.now().strftime("%Y%m%d"))
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 
 _log = logging.getLogger("bridge")
 
@@ -73,6 +73,28 @@ def setup_logging():
     root.addHandler(fh)
     root.addHandler(sh)
     return root
+
+
+# ---------------------------------------------------------------- 控制台窗口
+
+# 窗口标题。用 SetConsoleTitleW 而不是在 .bat 里写 `title`：
+# 批处理是按 **OEM 代码页** 读盘解析的，往里塞中文就是在赌代码页；
+# 这里走的是 UTF-16 的宽字符 API，跟代码页完全无关。
+#
+# ⚠️ 顺带说明：如果这个控制台是提权开的（本机账号就是内置 Administrator，
+#    Windows 会在标题前面自己加「管理员: 」），那串前缀是系统加的，去不掉，
+#    也不是我们标题的一部分。
+CONSOLE_TITLE = "这是转发QQ的桥文件，保持开启，最小化就好"
+
+
+def set_console_title(title=CONSOLE_TITLE):
+    """把控制台窗口标题改成中文。没有控制台（比如 pythonw）时静默跳过。"""
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleTitleW(ctypes.c_wchar_p(title))
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------- 读写 json
@@ -790,6 +812,7 @@ async def main():
 
 
 if __name__ == "__main__":
+    set_console_title()
     setup_logging()
     _log.info("=" * 64)
     _log.info("QQ 转发助手 · 本地桥 v%s", VERSION)

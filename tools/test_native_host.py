@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-Native Messaging 宿主的完整自检（v1.0.4）
+Native Messaging 宿主的完整自检（v1.0.5）
 
 测什么：真的把 bridge\\qq_host.bat / qq_native_host.py 起起来，按 Chrome
 官方的帧格式喂它消息，看它回什么。不是"另抄一份逻辑来测"—— 跑的就是
@@ -40,6 +40,7 @@ Native Messaging 宿主的完整自检（v1.0.4）
 
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -59,6 +60,21 @@ HOST_MANIFEST = os.path.join(BRIDGE, "com.mumu.qq_bridge.json")
 
 SANDBOX = os.path.join(HERE, "_nm_sandbox")
 STUB_TITLE = "QQ Bridge - STUB FOR TEST"
+
+
+def src_version(filename):
+    """从**真实源文件**里现读版本号，不硬编码。
+
+    硬编码的话每发一版都要来改这个测试 —— 而"改了 manifest 忘了改桥"
+    这个真正常见的错，反而被"我手动改对了字面量"掩盖掉了。
+    """
+    path = os.path.join(BRIDGE, filename)
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r'^VERSION = "([^"]+)"', line)
+            if m:
+                return m.group(1)
+    return None
 
 passed = []
 failed = []
@@ -176,7 +192,19 @@ def test_static():
     src = open(os.path.join(BRIDGE, "qq_bridge.py"), "r", encoding="utf-8").read()
     check("qq_bridge.py 启动时会自登记",
           "self_register_host()" in src and "register_host" in src)
-    check("qq_bridge.py 版本已到 1.0.4", 'VERSION = "1.0.4"' in src)
+    v_bridge = src_version("qq_bridge.py")
+    v_host = src_version("qq_native_host.py")
+    check("qq_bridge.py 的版本号是 x.y.z 形式",
+          bool(v_bridge) and re.match(r"^\d+\.\d+\.\d+$", v_bridge or ""), v_bridge)
+    try:
+        with open(os.path.join(ROOT, "extension", "manifest.json"),
+                  encoding="utf-8") as f:
+            v_ext = json.load(f).get("version")
+    except Exception as e:
+        v_ext = "读不到: %s" % e
+    check("manifest / 桥 / 宿主 三处版本号一致",
+          v_ext == v_bridge == v_host,
+          "manifest=%s 桥=%s 宿主=%s" % (v_ext, v_bridge, v_host))
 
 
 # ---------------------------------------------------------------- ①b 模拟浏览器查找
@@ -256,7 +284,10 @@ def test_protocol_direct():
     check("ping 有回应", isinstance(resp, dict), out[:80])
     if isinstance(resp, dict):
         check("ping -> pong", resp.get("action") == "pong", resp.get("action"))
-        check("ping 带上版本号 1.0.4", resp.get("version") == "1.0.4", resp.get("version"))
+        check("ping 回的版本号与源码一致",
+              resp.get("version") == src_version("qq_native_host.py"),
+              "%s vs 源码 %s" % (resp.get("version"),
+                                 src_version("qq_native_host.py")))
     check("stdout 正好一帧、零多余字节",
           resp is not None and endpos == len(out),
           "用掉 %d / 共 %d 字节" % (endpos, len(out)))
